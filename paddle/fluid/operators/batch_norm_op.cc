@@ -354,9 +354,10 @@ class BatchNormGradOp : public framework::OperatorWithKernel {
     const auto x_dims = ctx->GetInputDim("X");
     const DataLayout data_layout = framework::StringToDataLayout(
         ctx->Attrs().Get<std::string>("data_layout"));
-    const int C =
-        (data_layout == DataLayout::kNCHW ? x_dims[1]
-                                          : x_dims[x_dims.size() - 1]);
+    const int C = (data_layout == DataLayout::kNCHW ||
+                           data_layout == DataLayout::kAnyLayout
+                       ? x_dims[1]
+                       : x_dims[x_dims.size() - 1]);
 
     ctx->SetOutputDim(framework::GradVarName("X"), x_dims);
     ctx->SetOutputDim(framework::GradVarName("Scale"), {C});
@@ -395,12 +396,12 @@ class BatchNormGradOp : public framework::OperatorWithKernel {
     }
 #endif
 
-    std::string data_format = ctx.Attr<std::string>("data_format");
+    std::string data_format = ctx.Attr<std::string>("data_layout");
     // TODO(pzelazko-intel): enable MKLDNN layout when it's ready
     framework::DataLayout layout_ = framework::StringToDataLayout(data_format);
     return framework::OpKernelType(
-        framework::ToDataType(ctx.Input<Tensor>("Input")->type()),
-        ctx.GetPlace(), layout_, library_);
+        framework::ToDataType(ctx.Input<Tensor>("X")->type()), ctx.GetPlace(),
+        layout_, library_);
   }
 };
 
@@ -428,6 +429,7 @@ class BatchNormGradKernel<platform::CPUDeviceContext, T>
     const int C =
         (data_layout == DataLayout::kNCHW ? x_dims[1]
                                           : x_dims[x_dims.size() - 1]);
+
     const int sample_size = x->numel() / N / C;
 
     ConstEigenVectorArrayMap<T> scale_arr(scale->data<T>(), C);
