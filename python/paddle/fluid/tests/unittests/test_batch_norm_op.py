@@ -480,6 +480,7 @@ class TestMKLDNNBatchNormOpTraining(OpTest):
                 SavedVariance="saved_variance",
                 # attrs
                 is_test=False,
+                data_layout=data_format,
                 momentum=momentum,
                 epsilon=epsilon,
                 use_mkldnn=True)
@@ -527,7 +528,7 @@ class TestMKLDNNBatchNormOpTraining(OpTest):
                 place), data_layout
 
         place = core.CPUPlace()
-        data_format = "AnyLayout"
+        data_format = "NCHW"
         test_with_place(place, data_format, [2, 3, 4, 5])
 
 
@@ -626,6 +627,7 @@ class TestMKLDNNBatchNormOpInference(OpTest):
                 SavedVariance="saved_variance",
                 # attrs
                 is_test=True,
+                data_layout=data_format,
                 momentum=momentum,
                 epsilon=epsilon,
                 use_mkldnn=True)
@@ -644,7 +646,7 @@ class TestMKLDNNBatchNormOpInference(OpTest):
             print "MKLDNN op test inference: ", str(place), data_layout
 
         place = core.CPUPlace()
-        data_format = "AnyLayout"
+        data_format = "NCHW"
         test_with_place(place, data_format, [2, 3, 4, 5])
 
 
