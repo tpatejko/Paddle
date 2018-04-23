@@ -260,6 +260,7 @@ class TestBatchNormOpInference(unittest.TestCase):
     def init_kernel_type(self):
         pass
 
+
 class TestFP16BatchNormOpInference(TestBatchNormOpInference):
     def setUp(self):
         self.dtype = np.float16
@@ -411,6 +412,7 @@ class TestBatchNormOpTraining(unittest.TestCase):
 
     def init_kernel_type(self):
         pass
+
 
 if __name__ == '__main__':
     unittest.main()
