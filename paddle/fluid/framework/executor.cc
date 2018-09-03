@@ -24,6 +24,9 @@ limitations under the License. */
 #include "paddle/fluid/platform/place.h"
 #include "paddle/fluid/platform/profiler.h"
 
+#include "paddle/fluid/framework/ir/graph.h"
+#include "paddle/fluid/framework/ir/graph_viz_pass.h"
+
 DECLARE_bool(benchmark);
 DEFINE_bool(use_mkldnn, false, "Use MKLDNN to run");
 
@@ -34,6 +37,15 @@ namespace {
 // wrapping the first block 0.
 int kProgramId = -1;
 }  // namespace
+
+std::unique_ptr<ir::Graph> ApplyFCGRUPass(const ProgramDesc& main_program) {
+  auto graph = std::unique_ptr<ir::Graph>{new ir::Graph{main_program}};
+
+  auto fc_gru_pass = ir::PassRegistry::Instance().Get("fc_gru_pass");
+  graph = fc_gru_pass->Apply(std::move(graph));
+
+  return graph;
+}
 
 ExecutorPrepareContext::ExecutorPrepareContext(
     const framework::ProgramDesc& prog, size_t block_id)
@@ -126,6 +138,9 @@ void Executor::Run(const ProgramDesc& pdesc, Scope* scope, int block_id,
                    bool create_local_scope, bool create_vars) {
   platform::RecordBlock b(block_id);
   if (FLAGS_use_mkldnn) EnableMKLDNN(pdesc);
+
+  ApplyFCGRUPass(pdesc);
+
   auto ctx = Prepare(pdesc, block_id);
   RunPreparedContext(ctx.get(), scope, create_local_scope, create_vars);
 }

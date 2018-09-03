@@ -10,6 +10,7 @@ cc_library(fc_fuse_pass SRCS fc_fuse_pass.cc DEPS graph graph_pattern_detector)
 cc_library(attention_lstm_fuse_pass SRCS attention_lstm_fuse_pass.cc DEPS graph graph_pattern_detector)
 cc_library(infer_clean_graph_pass SRCS infer_clean_graph_pass.cc DEPS graph pass)
 cc_library(fc_lstm_fuse_pass SRCS fc_lstm_fuse_pass.cc DEPS graph graph_pattern_detector)
+cc_library(fc_gru_fuse_pass SRCS fc_gru_fuse_pass.cc DEPS graph pass graph_pattern_detector)
 cc_library(seq_concat_fc_fuse_pass SRCS seq_concat_fc_fuse_pass.cc DEPS graph graph_pattern_detector)
 
 cc_test(pass_test SRCS pass_test.cc DEPS graph pass graph_helper)

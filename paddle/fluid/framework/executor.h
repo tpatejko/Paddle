@@ -43,6 +43,8 @@ class Executor {
       : Executor(device.GetPlace()) {}
 
   explicit Executor(const platform::Place& place);
+  explicit Executor(const ProgramDesc& main_program,
+                    const platform::Place& place);
 
   /*
    * Close this Executor.
