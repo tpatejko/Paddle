@@ -25,7 +25,7 @@ limitations under the License. */
 #include "paddle/fluid/platform/profiler.h"
 
 #include "paddle/fluid/framework/ir/graph.h"
-#include "paddle/fluid/framework/ir/pass.h"
+#include "paddle/fluid/inference/api/paddle_inference_pass.h"
 
 DECLARE_bool(benchmark);
 DEFINE_bool(use_mkldnn, false, "Use MKLDNN to run");
@@ -433,5 +433,3 @@ void Executor::EnableMKLDNN(const ProgramDesc& program) {
 
 }  // namespace framework
 }  // namespace paddle
-
-USE_PASS(fc_fuse_pass);
