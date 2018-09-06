@@ -86,11 +86,10 @@ template <typename T>
 class LookupTableKernel : public framework::OpKernel<T> {
  public:
   void Compute(const framework::ExecutionContext &context) const override {
-    INIT_PERF();
-    MAKE_PERF_VAR();
-    BEGIN_OVERALL();
+//    INIT_PERF();
+//    MAKE_PERF_VAR();
+//    BEGIN_OVERALL();
 
-    BEGIN();
     auto *ids_t = context.Input<LoDTensor>("Ids");      // int tensor
     auto *output_t = context.Output<LoDTensor>("Out");  // float tensor
     auto *table_var = context.InputVar("W");
@@ -99,8 +98,6 @@ class LookupTableKernel : public framework::OpKernel<T> {
     int64_t *ids = const_cast<int64_t *>(ids_t->data<int64_t>());
     int64_t ids_numel = ids_t->numel();
 
-    END("Obtain data");
-
     if (table_var->IsType<LoDTensor>()) {
       auto *table_t = context.Input<LoDTensor>("W");
       int64_t row_number = table_t->dims()[0];
@@ -108,56 +105,44 @@ class LookupTableKernel : public framework::OpKernel<T> {
 
       auto *table = table_t->data<T>();
       auto *output = output_t->mutable_data<T>(context.GetPlace());
-/*
-      for (size_t i = 0; i < ids_numel; ++i) {
+ 
+      for (int64_t i = 0; i < ids_numel; ++i) {
         PADDLE_ENFORCE_LT(ids[i], row_number);
         PADDLE_ENFORCE_GE(ids[i], 0, "ids %d", i);
       }
 
       if (padding_idx != kNoPadding) {
-        size_t i = 0;
-        for ( ; ids[i] != padding_idx; ++i) {
-          memcpy(output + i * row_width, table + ids[i] * row_width,
-                 row_width * sizeof(T));
-        }
-        {
-          memset(output + i * row_width, 0, row_width * sizeof(T));
-          ++i;
-        }
-        for ( ; i < ids_numel; ++i) {
-          memcpy(output + i * row_width, table + ids[i] * row_width,
-                 row_width * sizeof(T));
+        for (int64_t i = 0; i < ids_numel; ++i) {
+          if (ids[i] == padding_idx) {
+            memset(output + i * row_width, 0, row_width * sizeof(T));
+          } else {
+            memcpy(output + i * row_width, table + ids[i] * row_width,
+                   row_width * sizeof(T));
+          }
         }
       } else {
+        std::vector<int64_t> distances;
+        distances.reserve(ids_numel);
+        distances.emplace_back(ids[0]);
+
+        for (size_t i = 1; i < ids_numel; i++) {
+          distances[i] = ids[i] - distances[i-1];
+        }
+
+        auto table_ptr = table;
+
         for (int64_t i = 0; i < ids_numel; ++i) {
-          memcpy(output + i * row_width, table + ids[i] * row_width,
+          table_ptr += distances[i] * row_width;
+          memcpy(output + i * row_width, table_ptr,
                  row_width * sizeof(T));
         }
       }
-*/
-      BEGIN();
-      for (int64_t i = 0; i < ids_numel; ++i) {
-        if (padding_idx != kNoPadding && ids[i] == padding_idx) {
-          BEGIN();
-          memset(output + i * row_width, 0, row_width * sizeof(T));
-          END("Padding on");
-        } else {
-          BEGIN();
-          PADDLE_ENFORCE_LT(ids[i], row_number);
-          PADDLE_ENFORCE_GE(ids[i], 0, "ids %d", i);
-          memcpy(output + i * row_width, table + ids[i] * row_width,
-                 row_width * sizeof(T));
-          END("Padding off");
-        }
-      }
-      END("LOD Tensor loop");
     } else if (table_var->IsType<SelectedRows>()) {
       const auto &table_t = table_var->Get<SelectedRows>();
       int64_t row_width = table_t.value().dims()[1];
       const auto *table = table_t.value().data<T>();
       auto *output = output_t->mutable_data<T>(context.GetPlace());
 
-      BEGIN();
       for (int64_t i = 0; i < ids_numel; ++i) {
         if (padding_idx != kNoPadding && ids[i] == padding_idx) {
           memset(output + i * row_width, 0, row_width * sizeof(T));
@@ -169,9 +154,7 @@ class LookupTableKernel : public framework::OpKernel<T> {
                  row_width * sizeof(T));
         }
       }
-      END("SelectedRows loop");
     }
-    END_OVERALL();
   }
 };
 
