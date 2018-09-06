@@ -21,6 +21,7 @@ limitations under the License. */
 #include "paddle/fluid/framework/lod_tensor.h"
 #include "paddle/fluid/framework/op_registry.h"
 #include "paddle/fluid/framework/selected_rows.h"
+#include <immintrin.h>
 
 #include <x86intrin.h>
 
@@ -121,20 +122,25 @@ class LookupTableKernel : public framework::OpKernel<T> {
           }
         }
       } else {
-        std::vector<int64_t> distances;
-        distances.reserve(ids_numel);
-        distances.emplace_back(ids[0]);
-
-        for (size_t i = 1; i < ids_numel; i++) {
-          distances[i] = ids[i] - distances[i-1];
-        }
-
-        auto table_ptr = table;
+        const uint32_t simd_width = 8;
+        uint32_t steps = row_width / simd_width;
+        uint32_t remain_offset = steps * simd_width;
 
         for (int64_t i = 0; i < ids_numel; ++i) {
-          table_ptr += distances[i] * row_width;
-          memcpy(output + i * row_width, table_ptr,
-                 row_width * sizeof(T));
+          uint64_t out_offset = i * row_width;
+          uint64_t table_offset = ids[i] * row_width;
+
+          T* out_ptr = output + out_offset;
+          const T* table_ptr = table + table_offset;
+
+          for (uint32_t j = 0; j < steps; j++) {
+            _mm256_loadu_ps(table_ptr + j*simd_width);
+            _mm256_storeu_ps(out_ptr + j*simd_width, src_vec);
+          }
+
+          for (uint32_t j = remain_offset; j < row_width; j++) {
+            *(out_ptr + j) = *(table_ptr + j);
+          }
         }
       }
     } else if (table_var->IsType<SelectedRows>()) {
