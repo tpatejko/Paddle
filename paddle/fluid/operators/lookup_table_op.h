@@ -21,57 +21,6 @@ limitations under the License. */
 #include "paddle/fluid/framework/lod_tensor.h"
 #include "paddle/fluid/framework/op_registry.h"
 #include "paddle/fluid/framework/selected_rows.h"
-#include <immintrin.h>
-
-#include <x86intrin.h>
-
-#define INIT_PERF() static RtdscHelper rtdsc_helper
-#define MAKE_PERF_VAR() unsigned long long perf = 0; (void) perf
-#define BEGIN() perf = __rdtsc()
-#define END(name) rtdsc_helper.AddMeasurement(name, __rdtsc() - perf)
-#define BEGIN_OVERALL() unsigned long long overall = __rdtsc()
-#define END_OVERALL() rtdsc_helper.AddMeasurement("Overall", __rdtsc() - overall)
-
-class RtdscHelper
-{
-using uint64 = unsigned long long;
-public:
-  void AddMeasurement(std::string name, uint64 time) {
-    if(m_Measurements.find(name) != m_Measurements.end()) {
-      m_Measurements[name].first += time;
-      m_Measurements[name].second++;
-    }
-    else
-      m_Measurements[name] = {time, 1};
-  }
-
-  void PrintResults() {
-    std::cout << "Bn measurement results" << std::endl;
-    auto width = std::setw(20);
-    std::cout << std::left << width << "Name"
-                           << width << "Count"
-                           << width << "Avg Time"
-                           << width << "Ratio" << std::endl;
-    auto overall_m = m_Measurements["Overall"];
-    auto overall = overall_m.first / (double) overall_m.second;
-    for(auto const& m : m_Measurements) {
-      auto time = m.second.first;
-      auto count = m.second.second;
-      auto average = time / (double) count;
-      std::cout << std::left << width << m.first
-                             << width << count
-                             << width << average
-                             << width << average / overall << std::endl;
-    }
-    std::cout << "------------------------" << std::endl;
-  }
-
-  ~RtdscHelper() {
-    PrintResults();
-  }
-private:
-  std::map<std::string, std::pair<uint64, unsigned>> m_Measurements; // name, time, count
-};
 
 namespace paddle {
 namespace operators {
@@ -87,10 +36,6 @@ template <typename T>
 class LookupTableKernel : public framework::OpKernel<T> {
  public:
   void Compute(const framework::ExecutionContext &context) const override {
-//    INIT_PERF();
-//    MAKE_PERF_VAR();
-//    BEGIN_OVERALL();
-
     auto *ids_t = context.Input<LoDTensor>("Ids");      // int tensor
     auto *output_t = context.Output<LoDTensor>("Out");  // float tensor
     auto *table_var = context.InputVar("W");
@@ -122,25 +67,26 @@ class LookupTableKernel : public framework::OpKernel<T> {
           }
         }
       } else {
-        const uint32_t simd_width = 8;
-        uint32_t steps = row_width / simd_width;
-        uint32_t remain_offset = steps * simd_width;
+        struct mapping_t {
+          int64_t table_idx;
+          uint64_t output_idx;
+        };
 
-        for (int64_t i = 0; i < ids_numel; ++i) {
-          uint64_t out_offset = i * row_width;
-          uint64_t table_offset = ids[i] * row_width;
+        std::vector<mapping_t> mappings;
+        mappings.reserve(ids_numel);
 
-          T* out_ptr = output + out_offset;
-          const T* table_ptr = table + table_offset;
+        for (size_t i = 0; i < ids_numel; ++i) {
+          mappings.emplace_back(mapping_t{ids[i], i});
+        }
 
-          for (uint32_t j = 0; j < steps; j++) {
-            _mm256_loadu_ps(table_ptr + j*simd_width);
-            _mm256_storeu_ps(out_ptr + j*simd_width, src_vec);
-          }
+    
+        std::sort(std::begin(mappings), std::end(mappings),
+                  [](const mapping_t& a, const mapping_t& b) -> bool { 
+                    return a.table_idx < b.table_idx; 
+                  });
 
-          for (uint32_t j = remain_offset; j < row_width; j++) {
-            *(out_ptr + j) = *(table_ptr + j);
-          }
+        for (size_t i = 0; i < ids_numel; ++i) {
+          memcpy(output + mappings[i].output_idx * row_width, table + mappings[i].table_idx * row_width, row_width*sizeof(T));
         }
       }
     } else if (table_var->IsType<SelectedRows>()) {
