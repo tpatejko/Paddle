@@ -24,39 +24,10 @@ limitations under the License. */
 #include "xbyak/xbyak.h"
 #include "xbyak/xbyak_util.h"
 
+#include <type_traits>
+
 namespace paddle {
 namespace operators {
-
-namespace xbyak {
-  using memcpy_t = void(float* dst, const float* src, uint32_t steps);
-  using memcpy_ptr_t = memcpy_t*;
-
-  struct memcpy_vec_t : public Xbyak::CodeGenerator {
-    memcpy_vec_t() {
-      // rdi is dst
-      // rsi is src
-      // rdx is steps
-
-      push(rbx);
-
-      xor_(rax, rax);
-      xor_(rbx, rbx);
-
-      L("for_steps");
-      {
-        vmovups(zmm0, ptr [rsi+rax]);
-        vmovups(ptr [rdi+rax], zmm0);
-        add(rax, 64); // take next 16 float elements
-        add(rbx, 1);
-        cmp(rbx, rdx);
-        jnz("for_steps");
-      }
-
-      pop(rbx);
-      ret();
-    }
-  };
-}
 
 using Tensor = framework::Tensor;
 using LoDTensor = framework::LoDTensor;
@@ -100,28 +71,13 @@ class LookupTableKernel : public framework::OpKernel<T> {
           }
         }
       } else {
-        const uint32_t simd_width = 16;
-        uint32_t steps = row_width / simd_width;
-        uint32_t remain_offset = steps * simd_width;
-
-        xbyak::memcpy_vec_t memcpy_vec;
-        xbyak::memcpy_ptr_t f = reinterpret_cast<xbyak::memcpy_ptr_t>(memcpy_vec.getCode());
-
-
-        for (int64_t i = 0; i < ids_numel; ++i) {
-          uint64_t out_offset = i * row_width;
-          uint64_t table_offset = ids[i] * row_width;
-
-          T* out_ptr = output + out_offset;
-          const T* table_ptr = table + table_offset;
-          
-          f(out_ptr, table_ptr, steps);
-    
-          for (uint32_t j = remain_offset; j < row_width; j++) {
-            *(out_ptr + j) = *(table_ptr + j);
+        for (size_t i = 0; i < row_width; ++i) {
+          for (size_t j = 0; j < ids_numel; ++j) {
+            auto element = *(table + i + ids[j]*row_width);
+            *(output + i + j*row_width) = element;
           }
         }
-      }
+      } 
     } else if (table_var->IsType<SelectedRows>()) {
       const auto &table_t = table_var->Get<SelectedRows>();
       int64_t row_width = table_t.value().dims()[1];
