@@ -29,6 +29,50 @@ limitations under the License. */
 namespace paddle {
 namespace operators {
 
+namespace xbyak {
+  using gather_scatter_t = void(float* dst, const float* src, const int32_t* dst_indices, const int32_t* src_indices, int32_t row_width);
+  using gather_scatter_ptr_t = std::add_pointer<gather_scatter_t>::type;
+
+  struct gather_scatter_impl : public Xbyak::CodeGenerator {
+    gather_scatter_impl() {
+      // rdi is dst
+      // rsi is src
+      // rdx is dst_indices
+      // rcx is src_indices
+      // r8 is row_width
+
+      push(rbx);
+      xor_(rax, rax);
+      xor_(rbx, rbx);
+
+      // multiply indices by row_width
+      vmovdqu(ymm0, ptr [rdx]);
+      vmovdqu(ymm1, ptr [rcx]);
+      mov(ebx, r8d);
+      vpbroadcastd(ymm2, ebx);
+
+      // scaled dst_indices
+      vpmuldq(ymm3, ymm0, ymm2);
+      // scalled src indices
+      vpmuldq(ymm4, ymm1, ymm2);
+
+      L("loop_row_width");
+      {
+        vgatherdps(ymm5, dword [rsi + ymm4*4], ymm8);
+        vscatterdps(yword [rdi + ymm3*4] | k1, ymm5);
+
+        add(rax, 1);
+        add(rsi, 4);
+        add(rdi, 4);
+        cmp(rax, r8);
+        jnz("loop_row_width");
+      }
+      pop(rbx);
+      ret();
+    }
+  };
+}
+
 using Tensor = framework::Tensor;
 using LoDTensor = framework::LoDTensor;
 using SelectedRows = framework::SelectedRows;
@@ -71,10 +115,25 @@ class LookupTableKernel : public framework::OpKernel<T> {
           }
         }
       } else {
-        for (size_t i = 0; i < row_width; ++i) {
-          for (size_t j = 0; j < ids_numel; ++j) {
-            auto element = *(table + i + ids[j]*row_width);
-            *(output + i + j*row_width) = element;
+        if (ids_numel >= 8) {
+          xbyak::gather_scatter_impl gather_scatter;
+          auto f = reinterpret_cast<xbyak::gather_scatter_ptr_t>(gather_scatter.getCode());
+
+          std::array<int32_t, 8> output_indices = {0, 1, 2, 3, 4, 5, 6, 7};
+          std::array<int32_t, 8> dword_table_indices;
+
+          for (size_t i = 0; i < 8; ++i) {
+            dword_table_indices[i] = static_cast<int32_t>(ids[i]);
+          }
+
+          auto dword_row_width = static_cast<int32_t>(row_width);
+          f(output, table, output_indices.data(), dword_table_indices.data(), dword_row_width);
+        } else {
+          for (size_t i = 0; i < row_width; ++i) {
+            for (size_t j = 0; j < ids_numel; ++j) {
+              auto element = *(table + i + ids[j]*row_width);
+              *(output + i + j*row_width) = element;
+            }
           }
         }
       } 
