@@ -523,6 +523,32 @@ struct ElewiseAddActInplaceGrad : public PatternBase {
   PATTERN_DECL_NODE(d_ele_y);
   PATTERN_DECL_NODE(ele_y);
 };
+
+struct Conv : public PatternBase {
+  Conv(PDPattern* pattern, const std::string& name_scope)
+      : PatternBase(pattern, name_scope, "convolution") {}
+
+  PDNode* operator()();
+
+  PATTERN_DECL_NODE(conv_op);
+  PATTERN_DECL_NODE(conv_input);
+  PATTERN_DECL_NODE(conv_bias);
+  PATTERN_DECL_NODE(conv_filter);
+  PATTERN_DECL_NODE(conv_residual_data);
+  PATTERN_DECL_NODE(conv_output);
+};
+
+struct ElementwiseAdd : public PatternBase {
+  ElementwiseAdd(PDPattern* pattern, const std::string& name_scope)
+      : PatternBase(pattern, name_scope, "elementwise_add") {}
+
+  PDNode* operator()(PDNode* conv_output);
+
+  PATTERN_DECL_NODE(elementwise_add_op);
+  PATTERN_DECL_NODE(elementwise_add_x);
+  PATTERN_DECL_NODE(elementwise_add_y);
+  PATTERN_DECL_NODE(elementwise_add_out);
+};
 }  // namespace patterns
 
 // Link two ir::Nodes from each other.
