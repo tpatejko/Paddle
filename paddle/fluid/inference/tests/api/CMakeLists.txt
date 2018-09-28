@@ -116,3 +116,6 @@ if(WITH_GPU AND TENSORRT_FOUND)
       EXTRA_DEPS ${INFERENCE_EXTRA_DEPS}
         ARGS --infer_model=${TRT_MODEL_INSTALL_DIR}/trt_test_models SERIAL)
 endif()
+
+set(CRNN_CTC_INSTALL_DIR "${INFERENCE_DEMO_INSTALL_DIR}/crnn_ctc")
+inference_analysis_api_test(test_analyzer_crnn_ctc ${CRNN_CTC_INSTALL_DIR} analyzer_crnn_ctc_tester.cc)
