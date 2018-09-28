@@ -108,3 +108,6 @@ if(WITH_GPU AND TENSORRT_FOUND)
      ARGS --dirname=${TRT_MODEL_INSTALL_DIR}/trt_test_models
      DEPS paddle_inference_tensorrt_subgraph_engine)
 endif()
+
+set(CRNN_CTC_INSTALL_DIR "${INFERENCE_DEMO_INSTALL_DIR}/crnn_ctc")
+inference_analysis_api_test(test_analyzer_crnn_ctc ${CRNN_CTC_INSTALL_DIR} analyzer_crnn_ctc_tester.cc)
