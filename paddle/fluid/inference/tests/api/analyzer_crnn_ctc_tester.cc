@@ -32,12 +32,20 @@ DEFINE_int64(iterations, 0, "Number of iterations.");
 DEFINE_string(infer_model, "", "Saved inference model.");
 DEFINE_int64(batch_size, 1, "Batch size.");
 
+// Default values for a Baidu dataset that we're using
+DEFINE_int64(image_height, 48, "Height of an image.");
+DEFINE_int64(image_width, 384, "Width of an image.");
+
 namespace paddle {
 
 struct DataReader {
   explicit DataReader(std::string data_list_file, std::string image_dir,
-                      int64_t batch_size)
-      : image_dir{image_dir}, batch_size{batch_size} {
+                      int64_t batch_size, int64_t image_height,
+                      int64_t image_width)
+      : image_dir{image_dir},
+        batch_size{batch_size},
+        image_height{image_height},
+        image_width{image_width} {
     if (data_list_file.empty()) {
       throw std::invalid_argument("Name of the data list file empty.");
     }
@@ -59,10 +67,22 @@ struct DataReader {
     std::unique_ptr<float[]> data;
   };
 
+  struct DataChunk {
+    int64_t batch_size;
+    int64_t channels;
+    int64_t height;
+    int64_t width;
+    std::vector<std::vector<int64_t>> indices;
+    std::unique_ptr<float[]> data;
+  };
+
  private:
   std::string image_dir;
   std::ifstream data_list_stream;
   int64_t batch_size;
+  const int64_t channels = 1;
+  int64_t image_height;
+  int64_t image_width;
 
   template <typename R, typename ConvertFunc, typename IT>
   std::pair<R, IT> retrieve_token(IT s, IT e, char sep, ConvertFunc f) {
@@ -79,22 +99,21 @@ struct DataReader {
   using parse_results =
       std::tuple<int64_t, int64_t, std::string, std::vector<int64_t>>;
   parse_results parse_single_line(std::string line) {
-    // h w file_name idx1,idx2,idx3,...
-
+    // w h file_name idx1,idx2,idx3,...
     auto it = std::begin(line);
-
-    auto height_pair = retrieve_token<int64_t>(
-        it, std::end(line), ' ',
-        [](std::string s) -> int64_t { return std::stoll(s); });
-    auto height = height_pair.first;
-    it = height_pair.second;
-    it++;
 
     auto width_pair = retrieve_token<int64_t>(
         it, std::end(line), ' ',
         [](std::string s) -> int64_t { return std::stoll(s); });
     auto width = width_pair.first;
     it = width_pair.second;
+    it++;
+
+    auto height_pair = retrieve_token<int64_t>(
+        it, std::end(line), ' ',
+        [](std::string s) -> int64_t { return std::stoll(s); });
+    auto height = height_pair.first;
+    it = height_pair.second;
     it++;
 
     auto filename_pair = retrieve_token<std::string>(
@@ -135,29 +154,38 @@ struct DataReader {
     cv::Mat image = cv::imread(full_filename, cv::IMREAD_GRAYSCALE);
 
     cv::Mat resized_image;
-    cv::resize(image, resized_image, cv::Size(width, height));
+    if (height != image_height || width != image_width) {
+      cv::resize(image, resized_image, cv::Size(image_width, image_height));
+    } else {
+      resized_image = image;
+    }
 
     cv::Mat float_image;
     resized_image.convertTo(float_image, CV_32FC1);
 
-    cv::Scalar mean = {127.5};
-
     std::vector<cv::Mat> image_channels;
     cv::split(float_image, image_channels);
 
-    constexpr size_t channels = 1;
     size_t image_rows = float_image.rows;
     size_t image_cols = float_image.cols;
     size_t image_size = image_rows * image_cols;
 
     std::unique_ptr<float[]> image_ptr{new float[channels * image_size]};
 
-    for (size_t c = 0; c < channels; ++c) {
-      image_channels[c] -= mean[c];
+    std::vector<float> mean(channels, 127.5);
 
-      std::copy_n(image_channels[c].ptr<float>(), image_size,
-                  image_ptr.get() + c * image_size);
-    }
+    std::transform(std::begin(image_channels), std::end(image_channels),
+                   std::begin(mean), std::begin(image_channels),
+                   [](cv::Mat& mat, float mean) -> cv::Mat {
+                     return mat - cv::Scalar{mean};
+                   });
+
+    std::accumulate(std::begin(image_channels), std::end(image_channels),
+                    image_ptr.get(),
+                    [image_size](float* img_ptr, const cv::Mat& mat) -> float* {
+                      std::copy_n(mat.ptr<const float>(), image_size, img_ptr);
+                      return img_ptr + image_size;
+                    });
 
     return std::make_pair(channels, std::move(image_ptr));
   }
@@ -175,70 +203,105 @@ struct DataReader {
     std::tie(channels, image_ptr) =
         retrieve_image_data(height, width, filename);
 
-    return DataRecord{channels, height, width, indices, std::move(image_ptr)};
+    return DataRecord{channels, image_height, image_width, indices,
+                      std::move(image_ptr)};
   }
 
+  std::vector<DataRecord> data_records;
+
  public:
-  bool Next() { return data_list_stream.good(); }
-
-  std::vector<DataRecord> Batch() {
-    std::vector<DataRecord> batch;
-
-    size_t bi = 0;
-    std::string line;
-    while (getline(data_list_stream, line) && bi < batch_size) {
-      auto data_record = get_data_record(line);
-      batch.push_back(std::move(data_record));
-      bi++;
+  bool Next() {
+    data_records.clear();
+    int bi = 0;
+    while (bi < batch_size) {
+      std::string line;
+      if (std::getline(data_list_stream, line)) {
+        auto data_record = get_data_record(line);
+        data_records.push_back(std::move(data_record));
+        bi++;
+      } else {
+        break;
+      }
     }
 
-    return batch;
+    return data_list_stream.good();
+  }
+
+  DataChunk Batch() {
+    DataChunk data_chunk;
+    size_t image_size = channels * image_height * image_width;
+    data_chunk.data.reset(new float[batch_size * image_size]);
+
+    std::accumulate(std::begin(data_records), std::end(data_records),
+                    data_chunk.data.get(),
+                    [image_size](float* ptr, const DataRecord& dr) -> float* {
+                      auto img_ptr = dr.data.get();
+
+                      std::copy(img_ptr, img_ptr + image_size, ptr);
+                      return ptr + image_size;
+                    });
+
+    std::transform(std::begin(data_records), std::end(data_records),
+                   std::back_inserter(data_chunk.indices),
+                   [](const DataRecord& dr) -> std::vector<int64_t> {
+                     return dr.indices;
+                   });
+
+    data_chunk.batch_size = batch_size;
+    data_chunk.channels = channels;
+    data_chunk.height = image_height;
+    data_chunk.width = image_width;
+
+    return data_chunk;
   }
 };
 
 TEST(crnn_ctc, basic) {
-  DataReader data_reader{FLAGS_data_list, FLAGS_image_dir, FLAGS_batch_size};
+  DataReader data_reader{FLAGS_data_list, FLAGS_image_dir, FLAGS_batch_size,
+                         FLAGS_image_height, FLAGS_image_width};
+
+  contrib::AnalysisConfig config;
+  config.model_dir = FLAGS_infer_model;
+  config.use_gpu = false;
+
+  auto predictor = CreatePaddlePredictor<contrib::AnalysisConfig,
+                                         PaddleEngineKind::kAnalysis>(config);
 
   while (data_reader.Next()) {
-    auto data_record = data_reader.Batch();
-
-    std::cout << "Batch\n";
-    for (auto& dr : data_record) {
-      for (auto i : dr.indices) {
-        std::cout << i << " ";
-      }
-    }
-  }
-  //  auto data_record = data_reader.get_data_record("384 48 325_dame_19109.jpg
-  //  67,64,76,68");
-
-  /*
-
-
-    contrib::AnalysisConfig config;
-    config.model_dir = FLAGS_infer_model;
-    config.use_gpu = false;
-
-    auto predictor = CreatePaddlePredictor<contrib::AnalysisConfig,
-                                           PaddleEngineKind::kAnalysis>(config);
+    std::cout << "Image\n";
+    auto data_chunk = data_reader.Batch();
 
     paddle::PaddleTensor input;
     input.name = "image";
-    input.shape = {1, static_cast<int>(data_record.channels),
-    static_cast<int>(data_record.height), static_cast<int>(data_record.width)};
+
+    input.shape = {static_cast<int>(data_chunk.batch_size),
+                   static_cast<int>(data_chunk.channels),
+                   static_cast<int>(data_chunk.height),
+                   static_cast<int>(data_chunk.width)};
+
     input.dtype = PaddleDType::FLOAT32;
-    input.data.Reset(data_record.data.get(), data_record.channels *
-    data_record.height * data_record.width * sizeof(float));
+    input.data.Reset(data_chunk.data.get(),
+                     data_chunk.batch_size * data_chunk.channels *
+                         data_chunk.height * data_chunk.width * sizeof(float));
 
     std::vector<paddle::PaddleTensor> output_slots;
 
     CHECK(predictor->Run({input}, &output_slots));
 
-    int32_t* output_data = static_cast<int32_t*>(output_slots[0].data.data());
-    std::cout << "First value " << output_data[0] << "\n";
-    std::cout << "First value " << output_data[1] << "\n";
-    std::cout << "First value " << output_data[2] << "\n";
-    */
-}
+    auto lod = output_slots[0].lod[0];
 
+    int64_t* output_data = static_cast<int64_t*>(output_slots[0].data.data());
+    std::ostream_iterator<std::string> ot{std::cout};
+
+    auto it = std::begin(lod);
+    std::transform(it + 1, std::end(lod), it, ot,
+                   [output_data](int64_t f, int64_t e) -> std::string {
+                     std::ostringstream ss;
+                     std::ostream_iterator<int64_t> is{ss, ","};
+
+                     std::copy(output_data + e, output_data + f, is);
+                     return ss.str();
+                   });
+  }
+}
 }  // namespace paddle
