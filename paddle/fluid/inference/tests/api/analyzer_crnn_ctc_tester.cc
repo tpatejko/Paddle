@@ -31,13 +31,13 @@ DEFINE_string(image_dir, "",
 DEFINE_int64(iterations, 0, "Number of iterations.");
 DEFINE_string(infer_model, "", "Saved inference model.");
 DEFINE_int64(batch_size, 1, "Batch size.");
+DEFINE_bool(print_results, false, "Print inference results.");
 
 // Default values for a Baidu dataset that we're using
 DEFINE_int64(image_height, 48, "Height of an image.");
 DEFINE_int64(image_width, 384, "Width of an image.");
 
 namespace paddle {
-
 struct DataReader {
   explicit DataReader(std::string data_list_file, std::string image_dir,
                       int64_t batch_size, int64_t image_height,
@@ -210,7 +210,7 @@ struct DataReader {
   std::vector<DataRecord> data_records;
 
  public:
-  bool Next() {
+  bool Next(bool is_circular = false) {
     data_records.clear();
     int bi = 0;
     while (bi < batch_size) {
@@ -220,7 +220,12 @@ struct DataReader {
         data_records.push_back(std::move(data_record));
         bi++;
       } else {
-        break;
+        if (is_circular) {
+          data_list_stream.clear();
+          data_list_stream.seekg(0);
+        } else {
+          break;
+        }
       }
     }
 
@@ -267,8 +272,13 @@ TEST(crnn_ctc, basic) {
   auto predictor = CreatePaddlePredictor<contrib::AnalysisConfig,
                                          PaddleEngineKind::kAnalysis>(config);
 
-  while (data_reader.Next()) {
-    std::cout << "Image\n";
+  inference::Timer timer;
+  inference::Timer total_timer;
+
+  std::vector<double> fpses;
+
+  for (size_t i = 0; i < FLAGS_iterations; ++i) {
+    data_reader.Next(true /* is_circular */);
     auto data_chunk = data_reader.Batch();
 
     paddle::PaddleTensor input;
@@ -286,22 +296,47 @@ TEST(crnn_ctc, basic) {
 
     std::vector<paddle::PaddleTensor> output_slots;
 
+    if (i == 0) {
+      total_timer.tic();
+    }
+
+    timer.tic();
     CHECK(predictor->Run({input}, &output_slots));
+    double batch_time = timer.toc() / 1000;
 
-    auto lod = output_slots[0].lod[0];
+    double fps = FLAGS_batch_size / batch_time;
+    fpses.push_back(fps);
 
-    int64_t* output_data = static_cast<int64_t*>(output_slots[0].data.data());
-    std::ostream_iterator<std::string> ot{std::cout};
+    std::cout << "Iteration: " << i << " latency: " << batch_time
+              << " fps: " << fps << "\n";
 
-    auto it = std::begin(lod);
-    std::transform(it + 1, std::end(lod), it, ot,
-                   [output_data](int64_t f, int64_t e) -> std::string {
-                     std::ostringstream ss;
-                     std::ostream_iterator<int64_t> is{ss, ","};
+    if (FLAGS_print_results) {
+      auto lod = output_slots[0].lod[0];
 
-                     std::copy(output_data + e, output_data + f, is);
-                     return ss.str();
-                   });
+      int64_t* output_data = static_cast<int64_t*>(output_slots[0].data.data());
+      std::ostream_iterator<std::string> ot{std::cout};
+
+      auto it = std::begin(lod);
+      std::transform(it + 1, std::end(lod), it, ot,
+                     [output_data](int64_t f, int64_t e) -> std::string {
+                       std::ostringstream ss;
+                       std::ostream_iterator<int64_t> is{ss, ","};
+
+                       std::copy(output_data + e, output_data + f, is);
+                       return ss.str();
+                     });
+      std::cout << "\n";
+    }
   }
+
+  double total_time = total_timer.toc() / 1000;
+
+  double avg_fps =
+      std::accumulate(std::begin(fpses), std::end(fpses), 0) / fpses.size();
+  double avg_latency = total_time / FLAGS_iterations;
+
+  std::cout << "Iterations: " << FLAGS_iterations
+            << " average latency: " << avg_latency
+            << " average fps: " << avg_fps << "\n";
 }
 }  // namespace paddle
