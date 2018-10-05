@@ -32,6 +32,7 @@ DEFINE_int64(iterations, 0, "Number of iterations.");
 DEFINE_string(infer_model, "", "Saved inference model.");
 DEFINE_int64(batch_size, 1, "Batch size.");
 DEFINE_bool(print_results, false, "Print inference results.");
+DEFINE_int64(skip_batches, 0, "Number of warm-up iterations.");
 
 // Default values for a Baidu dataset that we're using
 DEFINE_int64(image_height, 48, "Height of an image.");
@@ -261,6 +262,41 @@ struct DataReader {
   }
 };
 
+PaddleTensor PrepareData(const DataReader::DataChunk& data_chunk) {
+  paddle::PaddleTensor input;
+  input.name = "image";
+
+  input.shape = {static_cast<int>(data_chunk.batch_size),
+                 static_cast<int>(data_chunk.channels),
+                 static_cast<int>(data_chunk.height),
+                 static_cast<int>(data_chunk.width)};
+
+  input.dtype = PaddleDType::FLOAT32;
+  input.data.Reset(data_chunk.data.get(),
+                   data_chunk.batch_size * data_chunk.channels *
+                       data_chunk.height * data_chunk.width * sizeof(float));
+
+  return input;
+}
+
+void PrintResults(const std::vector<PaddleTensor>& output) {
+  auto lod = output[0].lod[0];
+
+  int64_t* output_data = static_cast<int64_t*>(output[0].data.data());
+  std::ostream_iterator<std::string> ot{std::cout};
+
+  auto it = std::begin(lod);
+  std::transform(it + 1, std::end(lod), it, ot,
+                 [output_data](int64_t f, int64_t e) -> std::string {
+                   std::ostringstream ss;
+                   std::ostream_iterator<int64_t> is{ss, ","};
+
+                   std::copy(output_data + e, output_data + f, is);
+                   return ss.str();
+                 });
+  std::cout << "\n";
+}
+
 TEST(crnn_ctc, basic) {
   DataReader data_reader{FLAGS_data_list, FLAGS_image_dir, FLAGS_batch_size,
                          FLAGS_image_height, FLAGS_image_width};
@@ -268,6 +304,7 @@ TEST(crnn_ctc, basic) {
   contrib::AnalysisConfig config;
   config.model_dir = FLAGS_infer_model;
   config.use_gpu = false;
+  config.enable_ir_optim = false;
 
   auto predictor = CreatePaddlePredictor<contrib::AnalysisConfig,
                                          PaddleEngineKind::kAnalysis>(config);
@@ -277,31 +314,35 @@ TEST(crnn_ctc, basic) {
 
   std::vector<double> fpses;
 
+  auto run_experiment =
+      [&predictor](const PaddleTensor& input) -> std::vector<PaddleTensor> {
+    std::vector<paddle::PaddleTensor> output_slots;
+    CHECK(predictor->Run({input}, &output_slots));
+
+    return output_slots;
+  };
+
+  std::cout << "Warm-up: " << FLAGS_skip_batches << " iterations.\n";
+  for (size_t i = 0; i < FLAGS_skip_batches; ++i) {
+    data_reader.Next(true /* is_circular */);
+    auto data_chunk = data_reader.Batch();
+
+    run_experiment(PrepareData(data_chunk));
+  }
+
+  std::cout << "Execution iterations: " << FLAGS_iterations << " iterations.\n";
   for (size_t i = 0; i < FLAGS_iterations; ++i) {
     data_reader.Next(true /* is_circular */);
     auto data_chunk = data_reader.Batch();
 
-    paddle::PaddleTensor input;
-    input.name = "image";
-
-    input.shape = {static_cast<int>(data_chunk.batch_size),
-                   static_cast<int>(data_chunk.channels),
-                   static_cast<int>(data_chunk.height),
-                   static_cast<int>(data_chunk.width)};
-
-    input.dtype = PaddleDType::FLOAT32;
-    input.data.Reset(data_chunk.data.get(),
-                     data_chunk.batch_size * data_chunk.channels *
-                         data_chunk.height * data_chunk.width * sizeof(float));
-
-    std::vector<paddle::PaddleTensor> output_slots;
+    auto input = PrepareData(data_chunk);
 
     if (i == 0) {
       total_timer.tic();
     }
 
     timer.tic();
-    CHECK(predictor->Run({input}, &output_slots));
+    auto output_slots = run_experiment(input);
     double batch_time = timer.toc() / 1000;
 
     double fps = FLAGS_batch_size / batch_time;
@@ -311,28 +352,14 @@ TEST(crnn_ctc, basic) {
               << " fps: " << fps << "\n";
 
     if (FLAGS_print_results) {
-      auto lod = output_slots[0].lod[0];
-
-      int64_t* output_data = static_cast<int64_t*>(output_slots[0].data.data());
-      std::ostream_iterator<std::string> ot{std::cout};
-
-      auto it = std::begin(lod);
-      std::transform(it + 1, std::end(lod), it, ot,
-                     [output_data](int64_t f, int64_t e) -> std::string {
-                       std::ostringstream ss;
-                       std::ostream_iterator<int64_t> is{ss, ","};
-
-                       std::copy(output_data + e, output_data + f, is);
-                       return ss.str();
-                     });
-      std::cout << "\n";
+      PrintResults(output_slots);
     }
   }
 
   double total_time = total_timer.toc() / 1000;
 
   double avg_fps =
-      std::accumulate(std::begin(fpses), std::end(fpses), 0) / fpses.size();
+      std::accumulate(std::begin(fpses), std::end(fpses), 0.f) / fpses.size();
   double avg_latency = total_time / FLAGS_iterations;
 
   std::cout << "Iterations: " << FLAGS_iterations
