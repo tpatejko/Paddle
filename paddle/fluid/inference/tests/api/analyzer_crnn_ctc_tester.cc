@@ -39,6 +39,83 @@ DEFINE_int64(image_height, 48, "Height of an image.");
 DEFINE_int64(image_width, 384, "Width of an image.");
 
 namespace paddle {
+/*
+  std::pair<int64_t, std::unique_ptr<float[]>> retrieve_image_data(
+      int64_t height, int64_t width, std::string filename) {
+    auto full_filename = image_dir + "/" + filename;
+
+    cv::Mat image = cv::imread(full_filename, cv::IMREAD_GRAYSCALE);
+
+    cv::Mat resized_image;
+    if (height != image_height || width != image_width) {
+      cv::resize(image, resized_image, cv::Size(image_width, image_height));
+    } else {
+      resized_image = image;
+    }
+
+    cv::Mat float_image;
+    resized_image.convertTo(float_image, CV_32FC1);
+
+    std::vector<cv::Mat> image_channels;
+    cv::split(float_image, image_channels);
+
+    size_t image_rows = float_image.rows;
+    size_t image_cols = float_image.cols;
+    size_t image_size = image_rows * image_cols;
+
+    std::unique_ptr<float[]> image_ptr{new float[channels * image_size]};
+
+    std::vector<float> mean(channels, 127.5);
+
+    std::transform(std::begin(image_channels), std::end(image_channels),
+                   std::begin(mean), std::begin(image_channels),
+                   [](cv::Mat& mat, float mean) -> cv::Mat {
+                     return mat - cv::Scalar{mean};
+                   });
+
+    std::accumulate(std::begin(image_channels), std::end(image_channels),
+                    image_ptr.get(),
+                    [image_size](float* img_ptr, const cv::Mat& mat) -> float* {
+                      std::copy_n(mat.ptr<const float>(), image_size, img_ptr);
+                      return img_ptr + image_size;
+                    });
+
+    return std::make_pair(channels, std::move(image_ptr));
+  }
+*/
+
+struct GrayscaleImageReader {
+  static constexpr int64_t channels = 1;
+
+  std::unique_ptr<float[]> operator()(int64_t image_height, int64_t image_width,
+                                      int64_t height, int64_t width,
+                                      const std::string& filename) {
+    cv::Mat image = cv::imread(filename, cv::IMREAD_GRAYSCALE);
+
+    cv::Mat resized_image;
+    if (height != image_height || width != image_width) {
+      cv::resize(image, resized_image, cv::Size(image_width, image_height));
+    } else {
+      resized_image = image;
+    }
+
+    cv::Mat float_image;
+    resized_image.convertTo(float_image, CV_32FC1);
+    cv::Scalar mean = {127.5};
+
+    resized_image -= mean;
+
+    size_t image_rows = float_image.rows;
+    size_t image_cols = float_image.cols;
+    size_t image_size = image_rows * image_cols;
+
+    std::unique_ptr<float[]> image_ptr{new float[image_size]};
+    std::copy_n(resized_image.ptr<const float>(), image_size, image_ptr.get());
+
+    return image_ptr;
+  }
+};
+
 struct DataReader {
   explicit DataReader(std::string data_list_file, std::string image_dir,
                       int64_t batch_size, int64_t image_height,
@@ -80,8 +157,11 @@ struct DataReader {
  private:
   std::string image_dir;
   std::ifstream data_list_stream;
+
+  GrayscaleImageReader image_reader;
+
   int64_t batch_size;
-  const int64_t channels = 1;
+  const int64_t channels = GrayscaleImageReader::channels;
   int64_t image_height;
   int64_t image_width;
 
@@ -148,61 +228,15 @@ struct DataReader {
     return std::make_tuple(height, width, filename, indices);
   }
 
-  std::pair<int64_t, std::unique_ptr<float[]>> retrieve_image_data(
-      int64_t height, int64_t width, std::string filename) {
-    auto full_filename = image_dir + "/" + filename;
-
-    cv::Mat image = cv::imread(full_filename, cv::IMREAD_GRAYSCALE);
-
-    cv::Mat resized_image;
-    if (height != image_height || width != image_width) {
-      cv::resize(image, resized_image, cv::Size(image_width, image_height));
-    } else {
-      resized_image = image;
-    }
-
-    cv::Mat float_image;
-    resized_image.convertTo(float_image, CV_32FC1);
-
-    std::vector<cv::Mat> image_channels;
-    cv::split(float_image, image_channels);
-
-    size_t image_rows = float_image.rows;
-    size_t image_cols = float_image.cols;
-    size_t image_size = image_rows * image_cols;
-
-    std::unique_ptr<float[]> image_ptr{new float[channels * image_size]};
-
-    std::vector<float> mean(channels, 127.5);
-
-    std::transform(std::begin(image_channels), std::end(image_channels),
-                   std::begin(mean), std::begin(image_channels),
-                   [](cv::Mat& mat, float mean) -> cv::Mat {
-                     return mat - cv::Scalar{mean};
-                   });
-
-    std::accumulate(std::begin(image_channels), std::end(image_channels),
-                    image_ptr.get(),
-                    [image_size](float* img_ptr, const cv::Mat& mat) -> float* {
-                      std::copy_n(mat.ptr<const float>(), image_size, img_ptr);
-                      return img_ptr + image_size;
-                    });
-
-    return std::make_pair(channels, std::move(image_ptr));
-  }
-
   DataRecord get_data_record(std::string line) {
     std::int64_t height;
     std::int64_t width;
     std::string filename;
     std::vector<int64_t> indices;
 
-    std::unique_ptr<float[]> image_ptr;
-    int64_t channels;
-
     std::tie(height, width, filename, indices) = parse_single_line(line);
-    std::tie(channels, image_ptr) =
-        retrieve_image_data(height, width, filename);
+    auto image_ptr = image_reader(image_height, image_width, height, width,
+                                  image_dir + "/" + filename);
 
     return DataRecord{channels, image_height, image_width, indices,
                       std::move(image_ptr)};
@@ -304,7 +338,7 @@ TEST(crnn_ctc, basic) {
   contrib::AnalysisConfig config;
   config.model_dir = FLAGS_infer_model;
   config.use_gpu = false;
-  config.enable_ir_optim = false;
+  //  config.enable_ir_optim = false;
 
   auto predictor = CreatePaddlePredictor<contrib::AnalysisConfig,
                                          PaddleEngineKind::kAnalysis>(config);
