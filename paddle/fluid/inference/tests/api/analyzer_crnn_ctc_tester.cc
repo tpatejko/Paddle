@@ -23,6 +23,7 @@
 #include "paddle/fluid/inference/api/paddle_inference_api.h"
 #include "paddle/fluid/inference/api/paddle_inference_pass.h"
 
+DEFINE_bool(mkldnn_used, false, "Use MKLDNN");
 DEFINE_string(data_list, "",
               "Path to a file with a list of images. Format of a line: h w "
               "filename,comma-separated indices.");
@@ -338,7 +339,8 @@ TEST(crnn_ctc, basic) {
   contrib::AnalysisConfig config;
   config.model_dir = FLAGS_infer_model;
   config.use_gpu = false;
-  //  config.enable_ir_optim = false;
+  config.enable_ir_optim = false;
+  config._use_mkldnn = FLAGS_mkldnn_used;
 
   auto predictor = CreatePaddlePredictor<contrib::AnalysisConfig,
                                          PaddleEngineKind::kAnalysis>(config);
