@@ -18,12 +18,12 @@
 #include <opencv2/opencv.hpp>
 
 #include "paddle/fluid/inference/analysis/analyzer.h"
-#include "paddle/fluid/inference/analysis/ut_helper.h"
 #include "paddle/fluid/inference/api/helper.h"
 #include "paddle/fluid/inference/api/paddle_inference_api.h"
 #include "paddle/fluid/inference/api/paddle_inference_pass.h"
+#include "paddle/fluid/platform/profiler.h"
 
-DEFINE_bool(mkldnn_used, false, "Use MKLDNN");
+DEFINE_bool(mkldnn_used, false, "Use MKLDNN.");
 DEFINE_string(data_list, "",
               "Path to a file with a list of images. Format of a line: h w "
               "filename,comma-separated indices.");
@@ -34,6 +34,7 @@ DEFINE_string(infer_model, "", "Saved inference model.");
 DEFINE_int64(batch_size, 1, "Batch size.");
 DEFINE_bool(print_results, false, "Print inference results.");
 DEFINE_int64(skip_batches, 0, "Number of warm-up iterations.");
+DECLARE_bool(profile);
 
 // Default values for a Baidu dataset that we're using
 DEFINE_int64(image_height, 48, "Height of an image.");
@@ -366,6 +367,12 @@ TEST(crnn_ctc, basic) {
     run_experiment(PrepareData(data_chunk));
   }
 
+  if (FLAGS_profile) {
+    auto pf_state = paddle::platform::ProfilerState::kCPU;
+    paddle::platform::EnableProfiler(pf_state);
+    paddle::platform::ResetProfiler();
+  }
+
   std::cout << "Execution iterations: " << FLAGS_iterations << " iterations.\n";
   for (size_t i = 0; i < FLAGS_iterations; ++i) {
     data_reader.Next(true /* is_circular */);
@@ -390,6 +397,11 @@ TEST(crnn_ctc, basic) {
     if (FLAGS_print_results) {
       PrintResults(output_slots);
     }
+  }
+
+  if (FLAGS_profile) {
+    paddle::platform::DisableProfiler(paddle::platform::EventSortingKey::kTotal,
+                                      "/tmp/profiler");
   }
 
   double total_time = total_timer.toc() / 1000;
