@@ -1420,6 +1420,7 @@ def conv2d(input,
            param_attr=None,
            bias_attr=None,
            use_cudnn=True,
+           is_test=False,
            act=None,
            name=None):
     """
@@ -1569,7 +1570,8 @@ def conv2d(input,
             'dilations': dilation,
             'groups': groups,
             'use_cudnn': use_cudnn,
-            'use_mkldnn': False
+            'use_mkldnn': False,
+            'is_test': is_test
         })
 
     pre_act = helper.append_bias_op(pre_bias, dim_start=1, dim_end=2)
