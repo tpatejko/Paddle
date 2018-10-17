@@ -105,14 +105,14 @@ struct GrayscaleImageReader {
     resized_image.convertTo(float_image, CV_32FC1);
     cv::Scalar mean = {127.5};
 
-    resized_image -= mean;
+    float_image -= mean;
 
     size_t image_rows = float_image.rows;
     size_t image_cols = float_image.cols;
     size_t image_size = image_rows * image_cols;
 
     std::unique_ptr<float[]> image_ptr{new float[image_size]};
-    std::copy_n(resized_image.ptr<const float>(), image_size, image_ptr.get());
+    std::copy_n(float_image.ptr<const float>(), image_size, image_ptr.get());
 
     return image_ptr;
   }
@@ -361,7 +361,7 @@ TEST(crnn_ctc, basic) {
 
   std::cout << "Warm-up: " << FLAGS_skip_batches << " iterations.\n";
   for (size_t i = 0; i < FLAGS_skip_batches; ++i) {
-    data_reader.Next(true /* is_circular */);
+    data_reader.Next(true is_circular);
     auto data_chunk = data_reader.Batch();
 
     run_experiment(PrepareData(data_chunk));
@@ -374,25 +374,27 @@ TEST(crnn_ctc, basic) {
   }
 
   std::cout << "Execution iterations: " << FLAGS_iterations << " iterations.\n";
+  /*while (data_reader.Next())*/
   for (size_t i = 0; i < FLAGS_iterations; ++i) {
     data_reader.Next(true /* is_circular */);
     auto data_chunk = data_reader.Batch();
 
     auto input = PrepareData(data_chunk);
 
-    if (i == 0) {
-      total_timer.tic();
-    }
-
-    timer.tic();
+    /*
+        if (i == 0) {
+          total_timer.tic();
+        }
+    */
+    //    timer.tic();
     auto output_slots = run_experiment(input);
-    double batch_time = timer.toc() / 1000;
+    //    double batch_time = timer.toc() / 1000;
 
-    double fps = FLAGS_batch_size / batch_time;
-    fpses.push_back(fps);
+    //    double fps = FLAGS_batch_size / batch_time;
+    //    fpses.push_back(fps);
 
-    std::cout << "Iteration: " << i << " latency: " << batch_time
-              << " fps: " << fps << "\n";
+    //    std::cout << "Iteration: " << i << " latency: " << batch_time
+    //              << " fps: " << fps << "\n";
 
     if (FLAGS_print_results) {
       PrintResults(output_slots);
