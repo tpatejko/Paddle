@@ -41,50 +41,36 @@ DEFINE_int64(image_height, 48, "Height of an image.");
 DEFINE_int64(image_width, 384, "Width of an image.");
 
 namespace paddle {
-/*
-  std::pair<int64_t, std::unique_ptr<float[]>> retrieve_image_data(
-      int64_t height, int64_t width, std::string filename) {
-    auto full_filename = image_dir + "/" + filename;
+// poor replacement for C++17 std::optional and Boost.Optional
+struct InPlace {};
+InPlace in_place;
 
-    cv::Mat image = cv::imread(full_filename, cv::IMREAD_GRAYSCALE);
+template <typename T>
+class Maybe {
+ private:
+  typename std::aligned_storage<sizeof(T), alignof(T)>::type data;
+  bool is_initialized{false};
 
-    cv::Mat resized_image;
-    if (height != image_height || width != image_width) {
-      cv::resize(image, resized_image, cv::Size(image_width, image_height));
-    } else {
-      resized_image = image;
-    }
-
-    cv::Mat float_image;
-    resized_image.convertTo(float_image, CV_32FC1);
-
-    std::vector<cv::Mat> image_channels;
-    cv::split(float_image, image_channels);
-
-    size_t image_rows = float_image.rows;
-    size_t image_cols = float_image.cols;
-    size_t image_size = image_rows * image_cols;
-
-    std::unique_ptr<float[]> image_ptr{new float[channels * image_size]};
-
-    std::vector<float> mean(channels, 127.5);
-
-    std::transform(std::begin(image_channels), std::end(image_channels),
-                   std::begin(mean), std::begin(image_channels),
-                   [](cv::Mat& mat, float mean) -> cv::Mat {
-                     return mat - cv::Scalar{mean};
-                   });
-
-    std::accumulate(std::begin(image_channels), std::end(image_channels),
-                    image_ptr.get(),
-                    [image_size](float* img_ptr, const cv::Mat& mat) -> float* {
-                      std::copy_n(mat.ptr<const float>(), image_size, img_ptr);
-                      return img_ptr + image_size;
-                    });
-
-    return std::make_pair(channels, std::move(image_ptr));
+ public:
+  template <typename... Args>
+  explicit Maybe(InPlace, Args&&... args) {
+    new (&data) T(std::forward<Args>(args)...);
+    is_initialized = true;
   }
-*/
+
+  Maybe() {}
+
+  operator bool() { return is_initialized; }
+
+  T& value() { return *reinterpret_cast<T*>(&data); }
+
+  ~Maybe() { reinterpret_cast<T*>(&data)->~T(); }
+};
+
+template <typename T, typename... Args>
+Maybe<T> MakeMaybe(Args&&... args) {
+  return Maybe<T>(in_place, std::forward<Args>(args)...);
+}
 
 struct GrayscaleImageReader {
   static constexpr int64_t channels = 1;
@@ -118,14 +104,9 @@ struct GrayscaleImageReader {
   }
 };
 
-struct DataReader {
-  explicit DataReader(std::string data_list_file, std::string image_dir,
-                      int64_t batch_size, int64_t image_height,
-                      int64_t image_width)
-      : image_dir{image_dir},
-        batch_size{batch_size},
-        image_height{image_height},
-        image_width{image_width} {
+struct DatafileParser {
+  explicit DatafileParser(std::string image_dir, std::string data_list_file)
+      : image_dir{image_dir} {
     if (data_list_file.empty()) {
       throw std::invalid_argument("Name of the data list file empty.");
     }
@@ -139,34 +120,6 @@ struct DataReader {
     }
   }
 
-  struct DataRecord {
-    int64_t channels;
-    int64_t height;
-    int64_t width;
-    std::vector<int64_t> indices;
-    std::unique_ptr<float[]> data;
-  };
-
-  struct DataChunk {
-    int64_t batch_size;
-    int64_t channels;
-    int64_t height;
-    int64_t width;
-    std::vector<std::vector<int64_t>> indices;
-    std::unique_ptr<float[]> data;
-  };
-
- private:
-  std::string image_dir;
-  std::ifstream data_list_stream;
-
-  GrayscaleImageReader image_reader;
-
-  int64_t batch_size;
-  const int64_t channels = GrayscaleImageReader::channels;
-  int64_t image_height;
-  int64_t image_width;
-
   template <typename R, typename ConvertFunc, typename IT>
   std::pair<R, IT> retrieve_token(IT s, IT e, char sep, ConvertFunc f) {
     std::string token_str;
@@ -178,7 +131,6 @@ struct DataReader {
     return std::make_pair(std::move(r), std::move(it));
   }
 
- public:
   using parse_results =
       std::tuple<int64_t, int64_t, std::string, std::vector<int64_t>>;
   parse_results parse_single_line(std::string line) {
@@ -230,18 +182,77 @@ struct DataReader {
     return std::make_tuple(height, width, filename, indices);
   }
 
-  DataRecord get_data_record(std::string line) {
+  Maybe<parse_results> Line() {
     std::int64_t height;
     std::int64_t width;
     std::string filename;
     std::vector<int64_t> indices;
 
-    std::tie(height, width, filename, indices) = parse_single_line(line);
-    auto image_ptr = image_reader(image_height, image_width, height, width,
-                                  image_dir + "/" + filename);
+    std::string line;
+    if (std::getline(data_list_stream, line)) {
+      std::tie(height, width, filename, indices) = parse_single_line(line);
+      return MakeMaybe<parse_results>(height, width, image_dir + "/" + filename,
+                                      indices);
+    } else {
+      return {};
+    }
+  }
 
-    return DataRecord{channels, image_height, image_width, indices,
-                      std::move(image_ptr)};
+ private:
+  std::string image_dir;
+  std::ifstream data_list_stream;
+};
+
+struct DataReader {
+  explicit DataReader(std::string image_dir, std::string data_list_file,
+                      int64_t batch_size, int64_t image_height,
+                      int64_t image_width)
+      : datafile_parser{image_dir, data_list_file},
+        batch_size{batch_size},
+        image_height{image_height},
+        image_width{image_width} {}
+
+  using DataRecord = std::tuple<int64_t, int64_t, int64_t, std::vector<int64_t>,
+                                std::unique_ptr<float[]>>;
+
+  struct DataChunk {
+    int64_t batch_size;
+    int64_t channels;
+    int64_t height;
+    int64_t width;
+    std::vector<std::vector<int64_t>> indices;
+    std::unique_ptr<float[]> data;
+  };
+
+ private:
+  DatafileParser datafile_parser;
+  GrayscaleImageReader image_reader;
+
+  int64_t batch_size;
+  const int64_t channels = GrayscaleImageReader::channels;
+  int64_t image_height;
+  int64_t image_width;
+
+ public:
+  Maybe<DataRecord> get_data_record() {
+    std::int64_t height;
+    std::int64_t width;
+    std::string filename;
+    std::vector<int64_t> indices;
+
+    auto parsed_line = datafile_parser.Line();
+
+    if (parsed_line) {
+      std::tie(height, width, filename, indices) = parsed_line.value();
+
+      auto image_ptr =
+          image_reader(image_height, image_width, height, width, filename);
+
+      return MakeMaybe<DataRecord>(channels, image_height, image_width, indices,
+                                   std::move(image_ptr));
+    }
+
+    return {};
   }
 
   std::vector<DataRecord> data_records;
@@ -251,22 +262,24 @@ struct DataReader {
     data_records.clear();
     int bi = 0;
     while (bi < batch_size) {
-      std::string line;
-      if (std::getline(data_list_stream, line)) {
-        auto data_record = get_data_record(line);
+      auto data_record = get_data_record();
+      if (data_record) {
         data_records.push_back(std::move(data_record));
         bi++;
       } else {
-        if (is_circular) {
-          data_list_stream.clear();
-          data_list_stream.seekg(0);
-        } else {
-          break;
-        }
+        /*
+          if (is_circular) {
+            data_list_stream.clear();
+            data_list_stream.seekg(0);
+          } else {
+            break;
+          }
+         */
+        break;
       }
     }
 
-    return data_list_stream.good();
+    return /*data_list_stream.good()*/ true;
   }
 
   DataChunk Batch() {
@@ -277,7 +290,7 @@ struct DataReader {
     std::accumulate(std::begin(data_records), std::end(data_records),
                     data_chunk.data.get(),
                     [image_size](float* ptr, const DataRecord& dr) -> float* {
-                      auto img_ptr = dr.data.get();
+                      auto img_ptr = std::get<4>(dr).get();
 
                       std::copy(img_ptr, img_ptr + image_size, ptr);
                       return ptr + image_size;
@@ -286,7 +299,7 @@ struct DataReader {
     std::transform(std::begin(data_records), std::end(data_records),
                    std::back_inserter(data_chunk.indices),
                    [](const DataRecord& dr) -> std::vector<int64_t> {
-                     return dr.indices;
+                     return std::get<3>(dr);
                    });
 
     data_chunk.batch_size = batch_size;
@@ -361,7 +374,7 @@ TEST(crnn_ctc, basic) {
 
   std::cout << "Warm-up: " << FLAGS_skip_batches << " iterations.\n";
   for (size_t i = 0; i < FLAGS_skip_batches; ++i) {
-    data_reader.Next(true is_circular);
+    data_reader.Next(true /*is_circular*/);
     auto data_chunk = data_reader.Batch();
 
     run_experiment(PrepareData(data_chunk));
@@ -381,20 +394,19 @@ TEST(crnn_ctc, basic) {
 
     auto input = PrepareData(data_chunk);
 
-    /*
-        if (i == 0) {
-          total_timer.tic();
-        }
-    */
-    //    timer.tic();
+    if (i == 0) {
+      total_timer.tic();
+    }
+
+    timer.tic();
     auto output_slots = run_experiment(input);
-    //    double batch_time = timer.toc() / 1000;
+    double batch_time = timer.toc() / 1000;
 
-    //    double fps = FLAGS_batch_size / batch_time;
-    //    fpses.push_back(fps);
+    double fps = FLAGS_batch_size / batch_time;
+    fpses.push_back(fps);
 
-    //    std::cout << "Iteration: " << i << " latency: " << batch_time
-    //              << " fps: " << fps << "\n";
+    std::cout << "Iteration: " << i << " latency: " << batch_time
+              << " fps: " << fps << "\n";
 
     if (FLAGS_print_results) {
       PrintResults(output_slots);
