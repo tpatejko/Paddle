@@ -354,20 +354,8 @@ class ConvMKLDNNOpKernel : public paddle::framework::OpKernel<T> {
     auto src_md = platform::MKLDNNMemDesc(
         src_tz, platform::MKLDNNGetDataType<T>(), chosen_memory_format);
 
-    auto weights_format = chosen_memory_format;
-    if (g > 1) {
-      // oc and ic values when groups are used.
-      // Fix for SE-Resnext due to MKLDNN calculates
-      // incorrectly number of filter blocks.
-      // TODO(tpatejko): It's not production quality.
-      // MKLDNN should be able to figure it out
-      if (weights_tz[1] < 16 || weights_tz[2] < 16) {
-        weights_format = mkldnn::memory::format::goihw;
-      }
-    }
-
     auto weights_md = platform::MKLDNNMemDesc(
-        weights_tz, platform::MKLDNNGetDataType<T>(), weights_format);
+        weights_tz, platform::MKLDNNGetDataType<T>(), chosen_memory_format);
     std::vector<int> bias_tz;  // TODO(mgallus): avoid empty vector creation.
                                // Currently used whenever bias is != nullptr.
     auto dst_md = platform::MKLDNNMemDesc(
