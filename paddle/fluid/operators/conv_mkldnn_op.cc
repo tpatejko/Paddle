@@ -321,9 +321,9 @@ class ConvMKLDNNOpKernel : public paddle::framework::OpKernel<T> {
       int h = weights_tz[2];
       int w = weights_tz[3];
       weights_tz.resize(5);
-      weights_tz[0] = g;
-      weights_tz[1] = o / g;
-      weights_tz[2] = i;
+      weights_tz[0] = g / 4;
+      weights_tz[1] = o / (g / 4);
+      weights_tz[2] = i * 4;
       weights_tz[3] = h;
       weights_tz[4] = w;
     }
@@ -354,8 +354,7 @@ class ConvMKLDNNOpKernel : public paddle::framework::OpKernel<T> {
     auto src_md = platform::MKLDNNMemDesc(
         src_tz, platform::MKLDNNGetDataType<T>(), chosen_memory_format);
     auto weights_md = platform::MKLDNNMemDesc(
-        weights_tz, platform::MKLDNNGetDataType<T>(),
-        (g == 1) ? chosen_memory_format : mkldnn::memory::format::gOIhw16i16o);
+        weights_tz, platform::MKLDNNGetDataType<T>(), chosen_memory_format);
     std::vector<int> bias_tz;  // TODO(mgallus): avoid empty vector creation.
                                // Currently used whenever bias is != nullptr.
     auto dst_md = platform::MKLDNNMemDesc(
