@@ -105,8 +105,9 @@ struct GrayscaleImageReader {
 };
 
 struct DatafileParser {
-  explicit DatafileParser(std::string image_dir, std::string data_list_file)
-      : image_dir{image_dir} {
+  explicit DatafileParser(bool is_circular, std::string image_dir,
+                          std::string data_list_file)
+      : is_circular(is_circular), image_dir{image_dir} {
     if (data_list_file.empty()) {
       throw std::invalid_argument("Name of the data list file empty.");
     }
@@ -188,26 +189,38 @@ struct DatafileParser {
     std::string filename;
     std::vector<int64_t> indices;
 
-    std::string line;
-    if (std::getline(data_list_stream, line)) {
-      std::tie(height, width, filename, indices) = parse_single_line(line);
-      return MakeMaybe<parse_results>(height, width, image_dir + "/" + filename,
-                                      indices);
-    } else {
-      return {};
-    }
+    // If file is empty and circular, there could be an infinite loop.
+    do {
+      std::string line;
+      std::getline(data_list_stream, line);
+
+      if (data_list_stream.good()) {
+        std::tie(height, width, filename, indices) = parse_single_line(line);
+        return MakeMaybe<parse_results>(height, width,
+                                        image_dir + "/" + filename, indices);
+      } else {
+        if (is_circular) {
+          data_list_stream.clear();
+          data_list_stream.seekg(0);
+        } else {
+          return {};
+        }
+      }
+    } while (true);
+    return {};
   }
 
  private:
+  bool is_circular;
   std::string image_dir;
   std::ifstream data_list_stream;
 };
 
 struct DataReader {
-  explicit DataReader(std::string image_dir, std::string data_list_file,
-                      int64_t batch_size, int64_t image_height,
-                      int64_t image_width)
-      : datafile_parser{image_dir, data_list_file},
+  explicit DataReader(bool is_circular, std::string image_dir,
+                      std::string data_list_file, int64_t batch_size,
+                      int64_t image_height, int64_t image_width)
+      : datafile_parser{is_circular, image_dir, data_list_file},
         batch_size{batch_size},
         image_height{image_height},
         image_width{image_width} {}
@@ -255,34 +268,27 @@ struct DataReader {
     return {};
   }
 
-  std::vector<DataRecord> data_records;
-
  public:
-  bool Next(bool is_circular = false) {
-    data_records.clear();
+  std::vector<DataRecord> Next() {
+    std::vector<DataRecord> data_records;
+
     int bi = 0;
     while (bi < batch_size) {
       auto data_record = get_data_record();
       if (data_record) {
-        data_records.push_back(std::move(data_record));
+        data_records.push_back(std::move(data_record.value()));
         bi++;
       } else {
-        /*
-          if (is_circular) {
-            data_list_stream.clear();
-            data_list_stream.seekg(0);
-          } else {
-            break;
-          }
-         */
         break;
       }
     }
 
-    return /*data_list_stream.good()*/ true;
+    return data_records;
   }
 
   DataChunk Batch() {
+    auto data_records = Next();
+
     DataChunk data_chunk;
     size_t image_size = channels * image_height * image_width;
     data_chunk.data.reset(new float[batch_size * image_size]);
@@ -347,8 +353,9 @@ void PrintResults(const std::vector<PaddleTensor>& output) {
 }
 
 TEST(crnn_ctc, basic) {
-  DataReader data_reader{FLAGS_data_list, FLAGS_image_dir, FLAGS_batch_size,
-                         FLAGS_image_height, FLAGS_image_width};
+  DataReader data_reader{FLAGS_iterations != 0, FLAGS_image_dir,
+                         FLAGS_data_list,       FLAGS_batch_size,
+                         FLAGS_image_height,    FLAGS_image_width};
 
   contrib::AnalysisConfig config;
   config.model_dir = FLAGS_infer_model;
@@ -374,7 +381,6 @@ TEST(crnn_ctc, basic) {
 
   std::cout << "Warm-up: " << FLAGS_skip_batches << " iterations.\n";
   for (size_t i = 0; i < FLAGS_skip_batches; ++i) {
-    data_reader.Next(true /*is_circular*/);
     auto data_chunk = data_reader.Batch();
 
     run_experiment(PrepareData(data_chunk));
@@ -389,7 +395,6 @@ TEST(crnn_ctc, basic) {
   std::cout << "Execution iterations: " << FLAGS_iterations << " iterations.\n";
   /*while (data_reader.Next())*/
   for (size_t i = 0; i < FLAGS_iterations; ++i) {
-    data_reader.Next(true /* is_circular */);
     auto data_chunk = data_reader.Batch();
 
     auto input = PrepareData(data_chunk);
