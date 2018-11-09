@@ -23,6 +23,8 @@
 #include "paddle/fluid/inference/api/paddle_inference_pass.h"
 #include "paddle/fluid/platform/profiler.h"
 
+#include <boost/optional.hpp>
+
 DEFINE_bool(mkldnn_used, false, "Use MKLDNN.");
 DEFINE_string(data_list, "",
               "Path to a file with a list of images. Format of a line: h w "
@@ -41,43 +43,12 @@ DEFINE_int64(image_height, 48, "Height of an image.");
 DEFINE_int64(image_width, 384, "Width of an image.");
 
 namespace paddle {
-// poor replacement for C++17 std::optional and Boost.Optional
-struct InPlace {};
-InPlace in_place;
-
-template <typename T>
-class Maybe {
- private:
-  typename std::aligned_storage<sizeof(T), alignof(T)>::type data;
-  bool is_initialized{false};
-
- public:
-  template <typename... Args>
-  explicit Maybe(InPlace, Args&&... args) {
-    new (&data) T(std::forward<Args>(args)...);
-    is_initialized = true;
-  }
-
-  Maybe() {}
-
-  operator bool() { return is_initialized; }
-
-  T& value() { return *reinterpret_cast<T*>(&data); }
-
-  ~Maybe() { reinterpret_cast<T*>(&data)->~T(); }
-};
-
-template <typename T, typename... Args>
-Maybe<T> MakeMaybe(Args&&... args) {
-  return Maybe<T>(in_place, std::forward<Args>(args)...);
-}
-
 struct GrayscaleImageReader {
   static constexpr int64_t channels = 1;
 
-  std::unique_ptr<float[]> operator()(int64_t image_height, int64_t image_width,
-                                      int64_t height, int64_t width,
-                                      const std::string& filename) {
+  std::shared_ptr<float> operator()(int64_t image_height, int64_t image_width,
+                                    int64_t height, int64_t width,
+                                    const std::string& filename) {
     cv::Mat image = cv::imread(filename, cv::IMREAD_GRAYSCALE);
 
     cv::Mat resized_image;
@@ -97,17 +68,18 @@ struct GrayscaleImageReader {
     size_t image_cols = float_image.cols;
     size_t image_size = image_rows * image_cols;
 
-    std::unique_ptr<float[]> image_ptr{new float[image_size]};
-    std::copy_n(float_image.ptr<const float>(), image_size, image_ptr.get());
+    std::shared_ptr<float> image_vec{new float[image_size],
+                                     std::default_delete<float[]>()};
+    std::copy_n(float_image.ptr<const float>(), image_size, image_vec.get());
 
-    return image_ptr;
+    return image_vec;
   }
 };
 
 struct DatafileParser {
   explicit DatafileParser(bool is_circular, std::string image_dir,
                           std::string data_list_file)
-      : is_circular(is_circular), image_dir{image_dir} {
+      : is_circular{is_circular}, image_dir{image_dir} {
     if (data_list_file.empty()) {
       throw std::invalid_argument("Name of the data list file empty.");
     }
@@ -183,7 +155,7 @@ struct DatafileParser {
     return std::make_tuple(height, width, filename, indices);
   }
 
-  Maybe<parse_results> Line() {
+  boost::optional<parse_results> Line() {
     std::int64_t height;
     std::int64_t width;
     std::string filename;
@@ -196,18 +168,19 @@ struct DatafileParser {
 
       if (data_list_stream.good()) {
         std::tie(height, width, filename, indices) = parse_single_line(line);
-        return MakeMaybe<parse_results>(height, width,
-                                        image_dir + "/" + filename, indices);
+
+        return std::make_tuple(height, width, image_dir + "/" + filename,
+                               indices);
       } else {
         if (is_circular) {
           data_list_stream.clear();
           data_list_stream.seekg(0);
         } else {
-          return {};
+          return boost::none;
         }
       }
     } while (true);
-    return {};
+    return boost::none;
   }
 
  private:
@@ -216,33 +189,61 @@ struct DatafileParser {
   std::ifstream data_list_stream;
 };
 
+struct Once {
+  bool operator()() { return true; }
+};
+
+struct Iterations {
+  explicit Iterations(int64_t iterations) : elapsed_iters{iterations} {}
+
+  bool operator()() {
+    bool to_continue = elapsed_iters > 0;
+    elapsed_iters--;
+    return to_continue;
+  }
+
+  int64_t elapsed_iters;
+};
+
 struct DataReader {
-  explicit DataReader(bool is_circular, std::string image_dir,
+  explicit DataReader(int64_t iterations, std::string image_dir,
                       std::string data_list_file, int64_t batch_size,
                       int64_t image_height, int64_t image_width)
-      : datafile_parser{is_circular, image_dir, data_list_file},
+      : datafile_parser{iterations != 0, image_dir, data_list_file},
+        elapsed_iters{iterations},
         batch_size{batch_size},
         image_height{image_height},
-        image_width{image_width} {}
+        image_width{image_width} {
+    auto check_mode = [iterations]() -> std::function<bool()> {
+      if (!iterations)
+        return Once{};
+      else
+        return Iterations{iterations};
+    };
+
+    mode_func = check_mode();
+  }
 
   using DataRecord = std::tuple<int64_t, int64_t, int64_t, std::vector<int64_t>,
-                                std::unique_ptr<float[]>>;
+                                std::shared_ptr<float>>;
 
   using DataChunk =
       std::tuple<int64_t, int64_t, int64_t, int64_t,
-                 std::vector<std::vector<int64_t>>, std::unique_ptr<float[]>>;
+                 std::vector<std::vector<int64_t>>, std::shared_ptr<float>>;
 
  private:
   DatafileParser datafile_parser;
   GrayscaleImageReader image_reader;
 
+  int64_t elapsed_iters;
   int64_t batch_size;
   const int64_t channels = GrayscaleImageReader::channels;
   int64_t image_height;
   int64_t image_width;
+  std::function<bool()> mode_func;
 
  public:
-  Maybe<DataRecord> get_data_record() {
+  boost::optional<DataRecord> get_data_record() {
     std::int64_t height;
     std::int64_t width;
     std::string filename;
@@ -251,27 +252,28 @@ struct DataReader {
     auto parsed_line = datafile_parser.Line();
 
     if (parsed_line) {
-      std::tie(height, width, filename, indices) = parsed_line.value();
+      std::tie(height, width, filename, indices) = *parsed_line;
 
-      auto image_ptr =
+      auto image =
           image_reader(image_height, image_width, height, width, filename);
 
-      return MakeMaybe<DataRecord>(channels, image_height, image_width, indices,
-                                   std::move(image_ptr));
+      return std::make_tuple(channels, image_height, image_width, indices,
+                             image);
     }
 
-    return {};
+    return boost::none;
   }
 
  public:
   std::vector<DataRecord> Next() {
     std::vector<DataRecord> data_records;
 
+    bool to_continue = mode_func();
     int bi = 0;
-    while (bi < batch_size) {
+    while ((bi < batch_size) && to_continue) {
       auto data_record = get_data_record();
       if (data_record) {
-        data_records.push_back(std::move(data_record.value()));
+        data_records.push_back(*data_record);
         bi++;
       } else {
         break;
@@ -281,20 +283,22 @@ struct DataReader {
     return data_records;
   }
 
-  Maybe<DataChunk> Batch() {
+  boost::optional<DataChunk> Batch() {
     auto data_records = Next();
 
-    if (data_records.empty()) return {};
+    if (data_records.empty()) return boost::none;
 
     size_t image_size = channels * image_height * image_width;
-    std::unique_ptr<float[]> data_chunk_ptr{new float[batch_size * image_size]};
+    std::shared_ptr<float> data_chunk{new float[batch_size * image_size],
+                                      std::default_delete<float[]>()};
+
+    using image_iterator = std::vector<float>::iterator;
 
     std::accumulate(std::begin(data_records), std::end(data_records),
-                    data_chunk_ptr.get(),
-                    [image_size](float* ptr, const DataRecord& dr) -> float* {
-                      auto img_ptr = std::get<4>(dr).get();
-
-                      std::copy(img_ptr, img_ptr + image_size, ptr);
+                    data_chunk.get(),
+                    [image_size](float* ptr, const DataRecord& dr) {
+                      auto img = std::get<4>(dr).get();
+                      std::copy(img, img + image_size, ptr);
                       return ptr + image_size;
                     });
 
@@ -305,8 +309,8 @@ struct DataReader {
                      return std::get<3>(dr);
                    });
 
-    return MakeMaybe<DataChunk>(batch_size, channels, image_height, image_width,
-                                indices, std::move(data_chunk_ptr));
+    return std::make_tuple(batch_size, channels, image_height, image_width,
+                           indices, data_chunk);
   }
 };
 
@@ -319,13 +323,13 @@ PaddleTensor PrepareData(const DataReader::DataChunk& data_chunk) {
   auto height = std::get<2>(data_chunk);
   auto width = std::get<3>(data_chunk);
   auto indices = std::get<4>(data_chunk);
-  auto data_chunk_ptr = std::get<5>(data_chunk).get();
+  auto image = std::get<5>(data_chunk);
 
   input.shape = {static_cast<int>(batch_size), static_cast<int>(channels),
                  static_cast<int>(height), static_cast<int>(width)};
 
   input.dtype = PaddleDType::FLOAT32;
-  input.data.Reset(data_chunk_ptr,
+  input.data.Reset(image.get(),
                    batch_size * channels * height * width * sizeof(float));
 
   return input;
@@ -350,9 +354,9 @@ void PrintResults(const std::vector<PaddleTensor>& output) {
 }
 
 TEST(crnn_ctc, basic) {
-  DataReader data_reader{FLAGS_iterations != 0, FLAGS_image_dir,
-                         FLAGS_data_list,       FLAGS_batch_size,
-                         FLAGS_image_height,    FLAGS_image_width};
+  DataReader data_reader{FLAGS_iterations,   FLAGS_image_dir,
+                         FLAGS_data_list,    FLAGS_batch_size,
+                         FLAGS_image_height, FLAGS_image_width};
 
   contrib::AnalysisConfig config;
   config.model_dir = FLAGS_infer_model;
@@ -371,7 +375,7 @@ TEST(crnn_ctc, basic) {
   auto run_experiment =
       [&predictor](const PaddleTensor& input) -> std::vector<PaddleTensor> {
     std::vector<paddle::PaddleTensor> output_slots;
-    CHECK(predictor->Run({input}, &output_slots));
+    predictor->Run({input}, &output_slots);
 
     return output_slots;
   };
@@ -380,7 +384,7 @@ TEST(crnn_ctc, basic) {
   for (size_t i = 0; i < FLAGS_skip_batches; ++i) {
     auto data_chunk = data_reader.Batch();
 
-    run_experiment(PrepareData(data_chunk.value()));
+    run_experiment(PrepareData(*data_chunk));
   }
 
   if (FLAGS_profile) {
@@ -393,7 +397,7 @@ TEST(crnn_ctc, basic) {
 
   int i = 0;
   while (auto data_chunk = data_reader.Batch()) {
-    auto input = PrepareData(data_chunk.value());
+    auto input = PrepareData(*data_chunk);
 
     if (i == 0) {
       total_timer.tic();
@@ -424,10 +428,9 @@ TEST(crnn_ctc, basic) {
 
   double avg_fps =
       std::accumulate(std::begin(fpses), std::end(fpses), 0.f) / fpses.size();
-  double avg_latency = total_time / FLAGS_iterations;
+  double avg_latency = total_time / i;
 
-  std::cout << "Iterations: " << FLAGS_iterations
-            << " average latency: " << avg_latency
+  std::cout << "Iterations: " << i << " average latency: " << avg_latency
             << " average fps: " << avg_fps << "\n";
 }
 }  // namespace paddle
