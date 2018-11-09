@@ -228,14 +228,9 @@ struct DataReader {
   using DataRecord = std::tuple<int64_t, int64_t, int64_t, std::vector<int64_t>,
                                 std::unique_ptr<float[]>>;
 
-  struct DataChunk {
-    int64_t batch_size;
-    int64_t channels;
-    int64_t height;
-    int64_t width;
-    std::vector<std::vector<int64_t>> indices;
-    std::unique_ptr<float[]> data;
-  };
+  using DataChunk =
+      std::tuple<int64_t, int64_t, int64_t, int64_t,
+                 std::vector<std::vector<int64_t>>, std::unique_ptr<float[]>>;
 
  private:
   DatafileParser datafile_parser;
@@ -286,15 +281,16 @@ struct DataReader {
     return data_records;
   }
 
-  DataChunk Batch() {
+  Maybe<DataChunk> Batch() {
     auto data_records = Next();
 
-    DataChunk data_chunk;
+    if (data_records.empty()) return {};
+
     size_t image_size = channels * image_height * image_width;
-    data_chunk.data.reset(new float[batch_size * image_size]);
+    std::unique_ptr<float[]> data_chunk_ptr{new float[batch_size * image_size]};
 
     std::accumulate(std::begin(data_records), std::end(data_records),
-                    data_chunk.data.get(),
+                    data_chunk_ptr.get(),
                     [image_size](float* ptr, const DataRecord& dr) -> float* {
                       auto img_ptr = std::get<4>(dr).get();
 
@@ -302,18 +298,15 @@ struct DataReader {
                       return ptr + image_size;
                     });
 
+    std::vector<std::vector<int64_t>> indices;
     std::transform(std::begin(data_records), std::end(data_records),
-                   std::back_inserter(data_chunk.indices),
+                   std::back_inserter(indices),
                    [](const DataRecord& dr) -> std::vector<int64_t> {
                      return std::get<3>(dr);
                    });
 
-    data_chunk.batch_size = batch_size;
-    data_chunk.channels = channels;
-    data_chunk.height = image_height;
-    data_chunk.width = image_width;
-
-    return data_chunk;
+    return MakeMaybe<DataChunk>(batch_size, channels, image_height, image_width,
+                                indices, std::move(data_chunk_ptr));
   }
 };
 
@@ -321,15 +314,19 @@ PaddleTensor PrepareData(const DataReader::DataChunk& data_chunk) {
   paddle::PaddleTensor input;
   input.name = "image";
 
-  input.shape = {static_cast<int>(data_chunk.batch_size),
-                 static_cast<int>(data_chunk.channels),
-                 static_cast<int>(data_chunk.height),
-                 static_cast<int>(data_chunk.width)};
+  auto batch_size = std::get<0>(data_chunk);
+  auto channels = std::get<1>(data_chunk);
+  auto height = std::get<2>(data_chunk);
+  auto width = std::get<3>(data_chunk);
+  auto indices = std::get<4>(data_chunk);
+  auto data_chunk_ptr = std::get<5>(data_chunk).get();
+
+  input.shape = {static_cast<int>(batch_size), static_cast<int>(channels),
+                 static_cast<int>(height), static_cast<int>(width)};
 
   input.dtype = PaddleDType::FLOAT32;
-  input.data.Reset(data_chunk.data.get(),
-                   data_chunk.batch_size * data_chunk.channels *
-                       data_chunk.height * data_chunk.width * sizeof(float));
+  input.data.Reset(data_chunk_ptr,
+                   batch_size * channels * height * width * sizeof(float));
 
   return input;
 }
@@ -383,7 +380,7 @@ TEST(crnn_ctc, basic) {
   for (size_t i = 0; i < FLAGS_skip_batches; ++i) {
     auto data_chunk = data_reader.Batch();
 
-    run_experiment(PrepareData(data_chunk));
+    run_experiment(PrepareData(data_chunk.value()));
   }
 
   if (FLAGS_profile) {
@@ -393,11 +390,10 @@ TEST(crnn_ctc, basic) {
   }
 
   std::cout << "Execution iterations: " << FLAGS_iterations << " iterations.\n";
-  /*while (data_reader.Next())*/
-  for (size_t i = 0; i < FLAGS_iterations; ++i) {
-    auto data_chunk = data_reader.Batch();
 
-    auto input = PrepareData(data_chunk);
+  int i = 0;
+  while (auto data_chunk = data_reader.Batch()) {
+    auto input = PrepareData(data_chunk.value());
 
     if (i == 0) {
       total_timer.tic();
@@ -416,6 +412,7 @@ TEST(crnn_ctc, basic) {
     if (FLAGS_print_results) {
       PrintResults(output_slots);
     }
+    i++;
   }
 
   if (FLAGS_profile) {
