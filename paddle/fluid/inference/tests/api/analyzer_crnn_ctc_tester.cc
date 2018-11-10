@@ -292,8 +292,6 @@ struct DataReader {
     std::shared_ptr<float> data_chunk{new float[batch_size * image_size],
                                       std::default_delete<float[]>()};
 
-    using image_iterator = std::vector<float>::iterator;
-
     std::accumulate(std::begin(data_records), std::end(data_records),
                     data_chunk.get(),
                     [image_size](float* ptr, const DataRecord& dr) {
@@ -354,9 +352,12 @@ void PrintResults(const std::vector<PaddleTensor>& output) {
 }
 
 TEST(crnn_ctc, basic) {
-  DataReader data_reader{FLAGS_iterations,   FLAGS_image_dir,
-                         FLAGS_data_list,    FLAGS_batch_size,
-                         FLAGS_image_height, FLAGS_image_width};
+  DataReader data_reader{FLAGS_skip_batches + FLAGS_iterations,
+                         FLAGS_image_dir,
+                         FLAGS_data_list,
+                         FLAGS_batch_size,
+                         FLAGS_image_height,
+                         FLAGS_image_width};
 
   contrib::AnalysisConfig config;
   config.model_dir = FLAGS_infer_model;
@@ -410,13 +411,13 @@ TEST(crnn_ctc, basic) {
     double fps = FLAGS_batch_size / batch_time;
     fpses.push_back(fps);
 
+    i++;
     std::cout << "Iteration: " << i << " latency: " << batch_time
               << " fps: " << fps << "\n";
 
     if (FLAGS_print_results) {
       PrintResults(output_slots);
     }
-    i++;
   }
 
   if (FLAGS_profile) {
