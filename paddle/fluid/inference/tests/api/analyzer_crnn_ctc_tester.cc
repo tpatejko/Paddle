@@ -363,7 +363,8 @@ TEST(crnn_ctc, basic) {
   config.model_dir = FLAGS_infer_model;
   config.use_gpu = false;
   config.enable_ir_optim = false;
-  config._use_mkldnn = FLAGS_mkldnn_used;
+
+  if (FLAGS_mkldnn_used) config.EnableMKLDNN();
 
   auto predictor = CreatePaddlePredictor<contrib::AnalysisConfig,
                                          PaddleEngineKind::kAnalysis>(config);
