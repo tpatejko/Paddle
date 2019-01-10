@@ -92,10 +92,21 @@ void MaxJitCode::genCode() {
 
   ret();
 }
+
+class MaxCreator : public JitCodeCreator<int> {
+ public:
+  bool UseMe(const int& attr) const override {
+    return platform::MayIUse(platform::avx512f);
+  }
+  size_t CodeSize(const int& d) const override { return 256 * 1024; }
+  std::unique_ptr<GenBase> CreateJitCode(const int& attr) const override {
+    return make_unique<MaxJitCode>(attr, CodeSize(attr));
+  }
+};
 }  // namespace gen
 }  // namespace jit
 }  // namespace operators
 }  // namespace paddle
 
 namespace gen = paddle::operators::jit::gen;
-REGISTER_JITKERNEL_GEN(kMax, gen::MaxJitCode);
+REGISTER_JITKERNEL_GEN(kMax, gen::MaxCreator);

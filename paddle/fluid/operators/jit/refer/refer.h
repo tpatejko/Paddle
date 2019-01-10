@@ -354,6 +354,11 @@ void SeqPool(const T* x, T* y, const seq_pool_attr_t* attr) {
   }
 }
 
+template <typename T>
+void Max(int num, const T* x, T* r) {
+  *r = *std::max_element(x, x + num);
+}
+
 #define DECLARE_REFER_KERNEL(name, tuples)             \
   template <typename T>                                \
   class name##Kernel : public ReferKernel<tuples<T>> { \
@@ -391,6 +396,7 @@ DECLARE_REFER_KERNEL(CRFDecoding, CRFDecodingTuples);
 DECLARE_REFER_KERNEL(LayerNorm, LayerNormTuples);
 
 DECLARE_REFER_KERNEL(NCHW16CMulNC, NCHW16CMulNCTuples);
+DECLARE_REFER_KERNEL(Max, MaxTuples);
 
 DECLARE_REFER_KERNEL(SeqPool, SeqPoolTuples);
 

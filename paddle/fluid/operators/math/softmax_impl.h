@@ -18,6 +18,9 @@ limitations under the License. */
 #include "paddle/fluid/framework/tensor.h"
 
 #include "paddle/fluid/operators/math/blas.h"
+
+#include "paddle/fluid/operators/jit/kernels.h"
+
 namespace paddle {
 namespace operators {
 namespace math {
@@ -85,13 +88,10 @@ class SoftmaxFunctor<DeviceContext, float, true, enable_if_CPU<DeviceContext>> {
     const int num_classes = in_dims[kClassDim];
     std::vector<float> entities(batch_size);
     auto blas = math::GetBlas<DeviceContext, float>(context);
+    auto jit_max =
+        jit::Get<jit::kMax, jit::MaxTuples<float>, platform::CPUPlace>(0);
     for (int n = 0; n < batch_size; ++n) {
-      entities[n] = in_data[n * num_classes];
-      for (int c = 1; c < num_classes; ++c) {
-        entities[n] = in_data[n * num_classes + c] > entities[n]
-                          ? in_data[n * num_classes + c]
-                          : entities[n];
-      }
+      jit_max(num_classes, &in_data[n * num_classes], &entities[n]);
       for (int c = 0; c < num_classes; ++c) {
         out_data[n * num_classes + c] =
             in_data[n * num_classes + c] - entities[n];

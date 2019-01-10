@@ -42,6 +42,7 @@ typedef enum {
   kLayerNorm,
   kNCHW16CMulNC,
   kSeqPool,
+  kMax,
 } KernelType;
 
 typedef enum {
@@ -156,6 +157,13 @@ struct NCHW16CMulNCTuples {
   typedef T data_type;
   typedef int attr_type;
   typedef void (*func_type)(const T*, const T*, T*, int, int);
+};
+
+template <typename T>
+struct MaxTuples {
+  typedef T data_type;
+  typedef int attr_type;
+  typedef void (*func_type)(int, const T*, T*);
 };
 
 // Just for adding to kernel pool without template
