@@ -21,6 +21,7 @@ namespace jit {
 namespace gen {
 
 void MaxJitCode::genCode() {
+#if defined(__x86_64__)
   // calling convention RDI, RSI, RDX, RCX, R8, R9
   // XMM0-7 (ints are passed that way)
   //      RDI - Reference to Result
@@ -28,7 +29,6 @@ void MaxJitCode::genCode() {
   //      RDX - Num classes
 
   // Regsters that need to be preserved: RBX,RBP, R12-R15
-
   Xbyak::util::Cpu current_cpu;
   if (current_cpu.has(Xbyak::util::Cpu::tAVX2)) {
     printf("AVX2 supported!\n");
@@ -44,52 +44,47 @@ void MaxJitCode::genCode() {
 
   // Compute partial maximums
   vpbroadcastd(ymm0, ptr[rsi]);
-  // Move offset for next 8 floating point values
-  xor_(rax, rax);
+  xor_(rax, rax);  // Move offset for next 8 floating point values
   L("for_i");
   cmp(rax, rcx);
   jz("tail");
-  vmovaps(ymm1, ptr[rsi + rax]);  // A
-  // Move offset for next 8 floating point values
-  add(rax, 32);
+  vmovups(ymm1, ptr[rsi + rax]);  // A
+  add(rax, 32);  // Move offset for next 8 floating point values
   vmaxps(ymm0, ymm0, ymm1);
   jmp("for_i");
-
   // Tail execution
   L("tail");
   sub(rdx, rcx);
   cmp(rdx, 16);
   jb("seq");
-  vmovaps(xmm2, ptr[rsi + rax]);  // A
-  // Move offset for next 4 floating point values
-  add(rax, 16);
+  vmovups(xmm2, ptr[rsi + rax]);  // A
+  add(rax, 16);  // Move offset for next 4 floating point values
   sub(rdx, 16);
   vperm2f128(ymm2, ymm2, ymm2, 0);
-  // Partial maxes in ymm0
-  vmaxps(ymm0, ymm0, ymm2);
+  vmaxps(ymm0, ymm0, ymm2);  // partial maxes in ymm0
   L("seq");
   cmp(rdx, 0);
   jz("done");
   vpbroadcastd(ymm2, ptr[rsi + rax]);
-  // Partial maxes in ymm0
-  vmaxps(ymm0, ymm0, ymm2);
+  vmaxps(ymm0, ymm0, ymm2);  // partial maxes in ymm0
   sub(rdx, 4);
   add(rax, 4);
   jmp("seq");
   L("done");
   // Get within shortlisted buffer maximum
   vperm2f128(ymm1, ymm0, ymm0, 1);
-  // Partial maxes in ymm0
-  vmaxps(ymm0, ymm0, ymm1);
+  vmaxps(ymm0, ymm0, ymm1);  // partial maxes in ymm0
   vpermilps(xmm1, xmm0, 0x1B);
-  // Partial maxes in ymm0
-  vmaxps(ymm0, ymm0, ymm1);
+  vmaxps(ymm0, ymm0, ymm1);  // partial maxes in ymm0
   vpermilps(xmm1, xmm0, 1);
-  // ymm0[0:31] contains global maximum
-  vmaxps(ymm0, ymm0, ymm1);
-  vmovss(ptr[rdi], xmm0);  // Result <-Max(X[.])
+  vmaxps(ymm0, ymm0, ymm1);  // ymm0[0:31] contains global maximum
+  vmovss(ptr[rdi], xmm0);    // Result <-Max(X[.])
   pop(rbx);
 
+  printf("Generating Max Value code\n");
+#else
+  printf("32bit not supported\n");
+#endif
   ret();
 }
 

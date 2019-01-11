@@ -91,7 +91,7 @@ class SoftmaxFunctor<DeviceContext, float, true, enable_if_CPU<DeviceContext>> {
     auto jit_max =
         jit::Get<jit::kMax, jit::MaxTuples<float>, platform::CPUPlace>(0);
     for (int n = 0; n < batch_size; ++n) {
-      jit_max(num_classes, &in_data[n * num_classes], &entities[n]);
+      jit_max(&entities[n], &in_data[n * num_classes], num_classes);
       for (int c = 0; c < num_classes; ++c) {
         out_data[n * num_classes + c] =
             in_data[n * num_classes + c] - entities[n];

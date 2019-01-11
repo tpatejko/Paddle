@@ -355,7 +355,7 @@ void SeqPool(const T* x, T* y, const seq_pool_attr_t* attr) {
 }
 
 template <typename T>
-void Max(int num, const T* x, T* r) {
+void Max(T* r, const T* x, int num) {
   *r = *std::max_element(x, x + num);
 }
 

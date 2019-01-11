@@ -163,7 +163,7 @@ template <typename T>
 struct MaxTuples {
   typedef T data_type;
   typedef int attr_type;
-  typedef void (*func_type)(int, const T*, T*);
+  typedef void (*func_type)(T*, const T*, int);
 };
 
 // Just for adding to kernel pool without template
