@@ -30,9 +30,7 @@ void MaxJitCode::genCode() {
 
   // Regsters that need to be preserved: RBX,RBP, R12-R15
   Xbyak::util::Cpu current_cpu;
-  if (current_cpu.has(Xbyak::util::Cpu::tAVX2)) {
-    printf("AVX2 supported!\n");
-  } else {
+  if (!current_cpu.has(Xbyak::util::Cpu::tAVX2)) {
     printf("AVX2 not detected!\n");
   }
 
@@ -80,8 +78,6 @@ void MaxJitCode::genCode() {
   vmaxps(ymm0, ymm0, ymm1);  // ymm0[0:31] contains global maximum
   vmovss(ptr[rdi], xmm0);    // Result <-Max(X[.])
   pop(rbx);
-
-  printf("Generating Max Value code\n");
 #else
   printf("32bit not supported\n");
 #endif

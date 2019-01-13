@@ -98,6 +98,11 @@ class SoftmaxFunctor<DeviceContext, float, true, enable_if_CPU<DeviceContext>> {
       }
     }
 
+#ifndef PADDLE_ON_INFERENCE
+    std::for_each(out_data, out_data + batch_size * num_classes,
+                  ValueClip<float>());
+#endif
+
     blas.VEXP(num_classes * batch_size, out_data, out_data);
     for (int n = 0; n < batch_size; ++n) {
       auto sum = blas.ASUM(num_classes, &out_data[n * num_classes], 1);
