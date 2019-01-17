@@ -78,10 +78,10 @@ class LRNMKLDNNOpKernel : public paddle::framework::OpKernel<T> {
     auto dims = paddle::framework::vectorize2int(x->dims());
 
     auto src_md = paddle::platform::MKLDNNMemDesc(
-        dims, mkldnn::memory::data_type::f32, mkldnn::memory::format::nchw);
+        dims, mkldnn::memory::data_type::f32, x->format());
 
     auto dst_md = paddle::platform::MKLDNNMemDesc(
-        dims, mkldnn::memory::data_type::f32, mkldnn::memory::format::nchw);
+        dims, mkldnn::memory::data_type::f32, x->format());
 
     auto forward_desc = mkldnn::lrn_forward::desc{mkldnn::prop_kind::forward,
                                                   mkldnn::lrn_across_channels,
@@ -125,6 +125,10 @@ class LRNMKLDNNOpKernel : public paddle::framework::OpKernel<T> {
 
       run_primitive(forward_pd, src_memory, workspace_memory, dst_memory);
     }
+    out->set_layout(framework::DataLayout::kMKLDNN);
+    out->set_format((mkldnn::memory::format)dst_memory.get_primitive_desc()
+                        .desc()
+                        .data.format);
   }
 };
 
